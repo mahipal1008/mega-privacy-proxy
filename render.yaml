@@ -1,0 +1,51 @@
+services:
+  - type: web
+    name: mega-orchestrator
+    runtime: node
+    rootDir: orchestrator
+    buildCommand: npm install
+    startCommand: node index.js
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MIN_WORKERS
+        value: "2"
+      - key: BW_LIMIT_BYTES
+        value: "4294967296"
+      - key: BW_WARN_BYTES
+        value: "4076863488"
+      - key: MEGA_EMAIL
+        sync: false
+      - key: MEGA_PASSWORD
+        sync: false
+      - key: PERSONAL_TOKEN
+        sync: false
+      - key: RENDER_API_KEY
+        sync: false
+      - key: RENDER_OWNER_ID
+        sync: false
+      - key: RENDER_GITHUB_REPO
+        sync: false
+      - key: ORCHESTRATOR_URL
+        sync: false
+      - key: CLIENT_ORIGIN
+        sync: false
+
+  - type: web
+    name: mega-privacy-client
+    runtime: static
+    rootDir: client
+    buildCommand: ""
+    staticPublishPath: .
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: no-store
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: no-referrer

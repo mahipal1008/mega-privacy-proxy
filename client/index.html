@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MEGA Privacy Proxy</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="container">
+    <h1>MEGA Privacy Proxy</h1>
+    <p class="subtitle">Personal-use private download tunnel</p>
+
+    <section class="settings">
+      <label for="orchestrator-url">Orchestrator URL</label>
+      <input id="orchestrator-url" type="url" placeholder="https://mega-orchestrator.onrender.com" autocomplete="off" />
+
+      <label for="personal-token">Personal Token</label>
+      <input id="personal-token" type="password" placeholder="your 32+ char secret" autocomplete="off" />
+
+      <label class="toggle">
+        <input id="encrypt-toggle" type="checkbox" checked />
+        <span>Enable in-browser AES-GCM re-encryption (zero-knowledge from Render)</span>
+      </label>
+    </section>
+
+    <section class="downloader">
+      <label for="mega-link">MEGA Link</label>
+      <input id="mega-link" type="url" placeholder="https://mega.nz/file/…" autocomplete="off" />
+      <button id="download-btn" type="button">Download</button>
+    </section>
+
+    <section class="progress">
+      <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
+      <div class="stats">
+        <div><span class="stat-label">Progress:</span> <span id="progress-text">–</span></div>
+        <div><span class="stat-label">Speed:</span> <span id="speed">–</span></div>
+        <div><span class="stat-label">ETA:</span> <span id="eta">–</span></div>
+      </div>
+    </section>
+
+    <section class="log-section">
+      <h3>Recent Events</h3>
+      <pre id="status-log" class="status-log"></pre>
+    </section>
+
+    <div id="error-box" class="error" role="alert"></div>
+
+    <footer>
+      <small>Personal use only. Bypassing MEGA's bandwidth limits may violate MEGA's Terms of Service.</small>
+    </footer>
+  </main>
+
+  <script src="crypto.js"></script>
+  <script src="downloader.js"></script>
+</body>
+</html>
