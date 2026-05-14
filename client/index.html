@@ -14,14 +14,7 @@
     <section class="settings">
       <label for="orchestrator-url">Orchestrator URL</label>
       <input id="orchestrator-url" type="url" placeholder="https://mega-orchestrator.onrender.com" autocomplete="off" />
-
-      <label for="personal-token">Personal Token</label>
-      <input id="personal-token" type="password" placeholder="your 32+ char secret" autocomplete="off" />
-
-      <label class="toggle">
-        <input id="encrypt-toggle" type="checkbox" checked />
-        <span>Enable in-browser AES-GCM re-encryption (zero-knowledge from Render)</span>
-      </label>
+      <small class="hint" id="token-status">🔒 AES-GCM encryption always on · Add <code>#yourtoken</code> to the page URL once, then bookmark it</small>
     </section>
 
     <section class="downloader">
