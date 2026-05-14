@@ -52,11 +52,12 @@ function makeClient({ apiKey, ownerId, repo, fetchImpl }) {
       repo,
       autoDeploy: 'no',
       branch: 'main',
+      rootDir: 'worker',
       serviceDetails: {
         env: 'node',
         plan: 'starter',
         region: 'oregon',
-        rootDir: 'worker',
+        runtime: 'node',
         envSpecificDetails: {
           buildCommand: 'npm install',
           startCommand: 'node index.js',
