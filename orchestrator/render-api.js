@@ -95,19 +95,33 @@ function makeClient({ apiKey, ownerId, repo, fetchImpl }) {
 
   async function getWorkerStatus(serviceId, { timeoutMs = 5 * 60 * 1000, intervalMs = 5000 } = {}) {
     const start = Date.now();
+    let url = null;
     while (Date.now() - start < timeoutMs) {
       const svc = await getService(serviceId).catch(() => null);
       if (svc) {
         const details = svc.serviceDetails || svc;
-        const url = details.url || svc.url || null;
-        const state = (svc.suspended === 'suspended' ? 'suspended' : (details.deploy && details.deploy.status) || svc.state || 'unknown');
-        if (url && (state === 'live' || state === 'active' || state === 'available')) {
+        url = details.url || svc.url || url;
+      }
+      if (url) {
+        try {
+          const h = await doFetch(url.replace(/\/$/, '') + '/health', { method: 'GET' });
+          if (h.ok) return { state: 'live', url };
+        } catch {}
+      }
+      try {
+        const deploysRes = await request(`/services/${encodeURIComponent(serviceId)}/deploys?limit=1`, { method: 'GET' }, { retries: 0 });
+        const arr = Array.isArray(deploysRes.body) ? deploysRes.body : [];
+        const last = arr[0] && (arr[0].deploy || arr[0]);
+        if (last && (last.status === 'live' || last.status === 'active')) {
           return { state: 'live', url };
         }
-      }
+        if (last && (last.status === 'update_failed' || last.status === 'build_failed' || last.status === 'canceled' || last.status === 'deactivated')) {
+          return { state: 'failed', url };
+        }
+      } catch {}
       await new Promise((r) => setTimeout(r, intervalMs));
     }
-    return { state: 'timeout', url: null };
+    return { state: 'timeout', url };
   }
 
   return { spawnWorker, killWorker, getService, getWorkerStatus, _request: request };
