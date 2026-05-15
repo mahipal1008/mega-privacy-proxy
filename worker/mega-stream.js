@@ -30,10 +30,33 @@ async function authenticate({ email, password } = {}) {
   return authPromise;
 }
 
+// Parse subfolder/subfile suffix from MEGA URLs like:
+//   https://mega.nz/folder/ID#KEY/folder/SUBID  → { baseLink, subId, subType: 'folder' }
+//   https://mega.nz/folder/ID#KEY/file/SUBID     → { baseLink, subId, subType: 'file' }
+//   https://mega.nz/folder/ID#KEY                → { baseLink, subId: null }
+function parseMegaLink(link) {
+  const m = link.match(/^(https?:\/\/mega\.(?:nz|co\.nz)\/(?:file|folder)\/[A-Za-z0-9_-]+#[A-Za-z0-9_-]+)\/(folder|file)\/([A-Za-z0-9_-]+)/);
+  if (m) return { baseLink: m[1], subType: m[2], subId: m[3] };
+  return { baseLink: link, subType: null, subId: null };
+}
+
 function fromUrl(link) {
   const mega = getMega();
   const File = mega.File || mega.default && mega.default.File;
-  return File.fromURL(link);
+  const { baseLink } = parseMegaLink(link);
+  return File.fromURL(baseLink);
+}
+
+// Navigate into a subfolder node within a loaded folder tree
+function findSubNode(folder, subId) {
+  const stack = [...(folder.children || [])];
+  while (stack.length) {
+    const n = stack.shift();
+    const key = childKey(n);
+    if (key === subId) return n;
+    if (n.children) stack.push(...n.children);
+  }
+  return null;
 }
 
 async function loadAttributes(file) {
@@ -56,8 +79,40 @@ function guessMime(name) {
 }
 
 async function getMeta(megaLink, childId) {
+  const { subType, subId } = parseMegaLink(megaLink);
   const file = fromUrl(megaLink);
   await loadAttributes(file);
+
+  // If link points to a subfolder (e.g. /folder/ID#KEY/folder/SUBID)
+  if (file.directory && subType === 'folder' && subId) {
+    const sub = findSubNode(file, subId);
+    if (!sub) throw new Error('subfolder not found');
+    if (!sub.directory) {
+      // subId points to a file, not a folder
+      return { type: 'file', filename: sub.name, fileSize: sub.size, mimeType: guessMime(sub.name), childId: childKey(sub) };
+    }
+    if (childId) {
+      const child = findChild(sub, childId);
+      if (!child) throw new Error('child not found');
+      if (child.directory) throw new Error('child is folder');
+      return { type: 'file', filename: child.name, fileSize: child.size, mimeType: guessMime(child.name), childId };
+    }
+    return {
+      type: 'folder',
+      filename: sub.name,
+      fileSize: flattenChildren(sub).reduce((s, c) => s + (c.size || 0), 0),
+      children: flattenChildren(sub),
+    };
+  }
+
+  // If link points to a specific file within a folder (e.g. /folder/ID#KEY/file/SUBID)
+  if (file.directory && subType === 'file' && subId) {
+    const sub = findSubNode(file, subId);
+    if (!sub) throw new Error('file not found in folder');
+    if (sub.directory) throw new Error('expected file, got folder');
+    return { type: 'file', filename: sub.name, fileSize: sub.size, mimeType: guessMime(sub.name), childId: childKey(sub) };
+  }
+
   if (file.directory) {
     if (!childId) {
       return {
@@ -108,10 +163,10 @@ function flattenChildren(folder, prefix = '') {
 // Stream a MEGA file (or child of folder) with full backpressure.
 // Single sequential pipe — NO multi-part RAM buffering. Bounded memory.
 function streamFile(megaLink, rangeStart, rangeEnd, childId) {
+  const { subType, subId } = parseMegaLink(megaLink);
   const root = fromUrl(megaLink);
   const opts = {};
   if (typeof rangeStart === 'number' && rangeStart >= 0) opts.start = rangeStart;
-  // Accept end === 0 (legitimate 1-byte range probe).
   if (typeof rangeEnd === 'number' && rangeEnd >= 0) opts.end = rangeEnd;
   const passthrough = new PassThrough({ highWaterMark: 4 * 1024 * 1024 });
   let upstream = null;
@@ -121,10 +176,22 @@ function streamFile(megaLink, rangeStart, rangeEnd, childId) {
     .then(() => {
       let file = root;
       if (root.directory) {
-        if (!childId) throw new Error('folder link requires child id');
-        file = findChild(root, childId);
-        if (!file) throw new Error('child not found');
-        if (file.directory) throw new Error('child is folder');
+        // If subfolder/subfile link, navigate to the target first
+        if (subType === 'file' && subId && !childId) {
+          file = findSubNode(root, subId);
+          if (!file) throw new Error('file not found in folder');
+        } else if (subType === 'folder' && subId && childId) {
+          const sub = findSubNode(root, subId);
+          if (!sub) throw new Error('subfolder not found');
+          file = findChild(sub, childId);
+          if (!file) throw new Error('child not found in subfolder');
+        } else if (childId) {
+          file = findChild(root, childId);
+          if (!file) throw new Error('child not found');
+        } else {
+          throw new Error('folder link requires child id');
+        }
+        if (file.directory) throw new Error('target is folder, expected file');
       }
       const size = file.size || 0;
       const start = typeof opts.start === 'number' ? opts.start : 0;
@@ -135,7 +202,6 @@ function streamFile(megaLink, rangeStart, rangeEnd, childId) {
       if (start > end) { passthrough.destroy(new Error('range_not_satisfiable')); return; }
       upstream = file.download({ start, end });
       upstream.on('error', (e) => passthrough.destroy(e));
-      // pipe applies backpressure automatically.
       upstream.pipe(passthrough);
     })
     .catch((err) => passthrough.destroy(err));

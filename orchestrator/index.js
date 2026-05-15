@@ -41,7 +41,7 @@ function extractBearer(req) {
 }
 
 // Accept legacy (#!), modern file/, and folder/ links.
-const MEGA_LINK_RE = /^https?:\/\/mega\.(nz|co\.nz)\/(file\/[A-Za-z0-9_-]{6,}#[A-Za-z0-9_-]{16,}|folder\/[A-Za-z0-9_-]{6,}#[A-Za-z0-9_-]{16,}|#![A-Za-z0-9_-]{6,}![A-Za-z0-9_-]{16,})/;
+const MEGA_LINK_RE = /^https?:\/\/mega\.(nz|co\.nz)\/(file\/[A-Za-z0-9_-]{6,}#[A-Za-z0-9_-]{16,}(\/file\/[A-Za-z0-9_-]+)?|folder\/[A-Za-z0-9_-]{6,}#[A-Za-z0-9_-]{16,}(\/folder\/[A-Za-z0-9_-]+|\/file\/[A-Za-z0-9_-]+)?|#![A-Za-z0-9_-]{6,}![A-Za-z0-9_-]{16,})/;
 
 function buildApp(opts = {}) {
   const config = { ...CONFIG, ...(opts.config || {}) };

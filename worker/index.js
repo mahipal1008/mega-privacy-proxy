@@ -21,7 +21,7 @@ const CONFIG = {
 
 // Defense-in-depth: same regex orchestrator uses. Reject anything else
 // to prevent SSRF / mega-lib being called with attacker-controlled URLs.
-const MEGA_LINK_RE = /^https?:\/\/mega\.(nz|co\.nz)\/(file\/[A-Za-z0-9_-]{6,}#[A-Za-z0-9_-]{16,}|folder\/[A-Za-z0-9_-]{6,}#[A-Za-z0-9_-]{16,}|#![A-Za-z0-9_-]{6,}![A-Za-z0-9_-]{16,})/;
+const MEGA_LINK_RE = /^https?:\/\/mega\.(nz|co\.nz)\/(file\/[A-Za-z0-9_-]{6,}#[A-Za-z0-9_-]{16,}(\/file\/[A-Za-z0-9_-]+)?|folder\/[A-Za-z0-9_-]{6,}#[A-Za-z0-9_-]{16,}(\/folder\/[A-Za-z0-9_-]+|\/file\/[A-Za-z0-9_-]+)?|#![A-Za-z0-9_-]{6,}![A-Za-z0-9_-]{16,})/;
 
 function timingSafeEqStr(a, b) {
   const ab = Buffer.from(String(a || ''), 'utf8');

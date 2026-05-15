@@ -14,8 +14,8 @@
 const ORCHESTRATOR_URL = 'https://mega-orchestrator.onrender.com';
 const SEGMENT_BYTES   = 3_500_000_000;
 const BLOB_FALLBACK_MAX = 1_900_000_000; // ~1.9 GB Blob safety ceiling
-const FILE_LINK_RE    = /^https?:\/\/mega\.nz\/(file|folder)\/[A-Za-z0-9_-]+(#|%23)[A-Za-z0-9_-]+/i;
-const MEGA_LINK_GLOBAL_RE = /https?:\/\/mega\.nz\/(file|folder)\/[A-Za-z0-9_-]+(#|%23)[A-Za-z0-9_-]+/gi;
+const FILE_LINK_RE    = /^https?:\/\/mega\.nz\/(file|folder)\/[A-Za-z0-9_-]+(#|%23)[A-Za-z0-9_-]+(\/folder\/[A-Za-z0-9_-]+|\/file\/[A-Za-z0-9_-]+)?/i;
+const MEGA_LINK_GLOBAL_RE = /https?:\/\/mega\.nz\/(file|folder)\/[A-Za-z0-9_-]+(#|%23)[A-Za-z0-9_-]+(\/folder\/[A-Za-z0-9_-]+|\/file\/[A-Za-z0-9_-]+)?/gi;
 const SPEED_WINDOW_SEC = 5;
 
 const supportsFSA = typeof window !== 'undefined' && typeof window.showSaveFilePicker === 'function';
