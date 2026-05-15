@@ -379,8 +379,10 @@ async function runItem(item) {
         }
         sink = blobSink(filename, null);
       }
-      const writable = await handle.createWritable();
-      sink = fsaSink(writable);
+      if (handle) {
+        const writable = await handle.createWritable();
+        sink = fsaSink(writable);
+      }
     } else {
       if (item.size > BLOB_FALLBACK_MAX) {
         throw new Error('Browser lacks File System Access. Use Chrome/Edge for files >1.9 GB.');
