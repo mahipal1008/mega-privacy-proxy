@@ -75,11 +75,18 @@ async function getMeta(megaLink, childId) {
   return { type: 'file', filename: file.name, fileSize: file.size, mimeType: guessMime(file.name) };
 }
 
+// Shared-folder children use downloadId (array), not nodeId.
+function childKey(node) {
+  if (node.nodeId) return node.nodeId;
+  if (Array.isArray(node.downloadId) && node.downloadId.length > 1) return node.downloadId[1];
+  return null;
+}
+
 function findChild(folder, childId) {
   const stack = [...(folder.children || [])];
   while (stack.length) {
     const n = stack.shift();
-    if (n.nodeId === childId) return n;
+    if (childKey(n) === childId) return n;
     if (n.children) stack.push(...n.children);
   }
   return null;
@@ -92,7 +99,7 @@ function flattenChildren(folder, prefix = '') {
     if (c.directory) {
       out.push(...flattenChildren(c, path));
     } else {
-      out.push({ id: c.nodeId, name: c.name, path, size: c.size || 0 });
+      out.push({ id: childKey(c), name: c.name, path, size: c.size || 0 });
     }
   }
   return out;
@@ -135,4 +142,4 @@ function streamFile(megaLink, rangeStart, rangeEnd, childId) {
   return passthrough;
 }
 
-module.exports = { authenticate, getMeta, streamFile, _internal: { fromUrl, loadAttributes, guessMime } };
+module.exports = { authenticate, getMeta, streamFile, _internal: { fromUrl, loadAttributes, guessMime, childKey } };

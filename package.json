@@ -7,7 +7,7 @@
     "install:all": "npm install && (cd orchestrator && npm install) && (cd worker && npm install)",
     "start:orchestrator": "node orchestrator/index.js",
     "start:worker": "node worker/index.js",
-    "test": "jest --runInBand",
+    "test": "jest --runInBand --testPathIgnorePatterns='browser'",
     "test:unit": "jest --runInBand tests/orchestrator.test.js tests/worker.test.js tests/crypto.test.js",
     "test:integration": "jest --runInBand tests/integration.test.js",
     "test:edge": "jest --runInBand --verbose tests/edge-cases.test.js",
@@ -15,9 +15,12 @@
     "lint": "eslint . --ext .js"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "jest": "^29.7.0",
     "nock": "^13.5.4",
-    "@playwright/test": "^1.47.2"
+    "playwright": "^1.60.0"
   },
-  "engines": { "node": ">=18.0.0" }
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }
