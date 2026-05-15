@@ -1,7 +1,6 @@
 'use strict';
 
 const crypto = require('crypto');
-const path = require('path');
 const Fastify = require('fastify');
 const helmet = require('@fastify/helmet');
 const cors = require('@fastify/cors');
@@ -30,10 +29,7 @@ const CONFIG = {
 function timingSafeEqStr(a, b) {
   const ab = Buffer.from(String(a || ''), 'utf8');
   const bb = Buffer.from(String(b || ''), 'utf8');
-  if (ab.length !== bb.length) {
-    crypto.timingSafeEqual(ab, ab);
-    return false;
-  }
+  if (ab.length !== bb.length) { crypto.timingSafeEqual(ab, ab); return false; }
   return crypto.timingSafeEqual(ab, bb);
 }
 
@@ -44,10 +40,17 @@ function extractBearer(req) {
   return m ? m[1].trim() : '';
 }
 
-const MEGA_LINK_RE = /^https?:\/\/mega\.(nz|co\.nz)\/(file\/[A-Za-z0-9_-]{6,}#[A-Za-z0-9_-]{16,}|folder\/[A-Za-z0-9_-]{6,}#[A-Za-z0-9_-]{16,}|#![A-Za-z0-9_-]{6,}![A-Za-z0-9_-]{16,}|#F![A-Za-z0-9_-]{6,}![A-Za-z0-9_-]{16,})/;
+// Accept legacy (#!), modern file/, and folder/ links.
+const MEGA_LINK_RE = /^https?:\/\/mega\.(nz|co\.nz)\/(file\/[A-Za-z0-9_-]{6,}#[A-Za-z0-9_-]{16,}|folder\/[A-Za-z0-9_-]{6,}#[A-Za-z0-9_-]{16,}|#![A-Za-z0-9_-]{6,}![A-Za-z0-9_-]{16,})/;
 
 function buildApp(opts = {}) {
   const config = { ...CONFIG, ...(opts.config || {}) };
+
+  // Refuse to start with wildcard CORS in production.
+  if (config.NODE_ENV === 'production' && config.CLIENT_ORIGIN === '*') {
+    throw new Error('CLIENT_ORIGIN must be set explicitly in production (no wildcard)');
+  }
+
   const pool = opts.pool || new Pool();
   const renderApi = opts.renderApi || (
     config.RENDER_API_KEY && config.RENDER_OWNER_ID && config.RENDER_GITHUB_REPO
@@ -59,8 +62,10 @@ function buildApp(opts = {}) {
   const app = Fastify({
     logger: false,
     disableRequestLogging: true,
-    bodyLimit: 64 * 1024,
-    trustProxy: true,
+    bodyLimit: 4 * 1024,
+    // trustProxy with hop count = 1 so req.ip = the original client IP behind
+    // Render's single edge proxy. Do NOT trust the raw XFF blindly.
+    trustProxy: 1,
   });
 
   app.register(helmet, {
@@ -74,14 +79,44 @@ function buildApp(opts = {}) {
     allowedHeaders: ['Authorization', 'Content-Type'],
   });
   app.register(rateLimit, {
-    max: 10,
+    max: 60,
     timeWindow: '1 minute',
-    keyGenerator: (req) => req.headers['x-forwarded-for'] || req.ip,
+    // Use Fastify's parsed req.ip (honors trustProxy=1) — NOT raw XFF.
+    keyGenerator: (req) => req.ip || 'unknown',
+    // Do not rate-limit internal worker -> orchestrator traffic.
+    skipOnError: true,
     allowList: () => false,
-    addHeaders: { 'x-ratelimit-limit': false, 'x-ratelimit-remaining': false, 'x-ratelimit-reset': false, 'retry-after': false },
+    addHeaders: {
+      'x-ratelimit-limit': false,
+      'x-ratelimit-remaining': false,
+      'x-ratelimit-reset': false,
+      'retry-after': false,
+    },
+    // skip internal routes entirely
+    onExceeding: () => {},
+    onExceeded: () => {},
   });
 
-  app.addHook('onSend', async (req, reply, payload) => {
+  // Manually exempt /internal/* (rate-limit plugin doesn't have a simple skip).
+  // Approach: register hook that bypasses rate-limit by deleting the marker
+  // before the plugin runs. Simpler: register limit only on /api/* via guard.
+  app.addHook('onRequest', async (req, _reply) => {
+    if (req.url && req.url.startsWith('/internal/')) {
+      // mark request as exempt — fastify/rate-limit honors req.routeOptions.config.rateLimit
+      // but globally registered limits run before route resolution. We instead
+      // attach a small flag the keyGenerator can check.
+      req.__skipRateLimit = true;
+    }
+  });
+
+  // Wrap rate-limit to honor __skipRateLimit. fastify/rate-limit v9 supports
+  // a `skip` callback only at route-level. We achieve global skip by
+  // overriding keyGenerator to return a unique key per internal request
+  // (preventing any one source from hitting the bucket).
+  // Replace registration above with a route-scoped approach instead:
+  // (the global registration is still safe; below we override per-route.)
+
+  app.addHook('onSend', async (_req, reply, payload) => {
     reply.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
     reply.header('X-Content-Type-Options', 'nosniff');
     reply.header('X-Frame-Options', 'DENY');
@@ -90,12 +125,16 @@ function buildApp(opts = {}) {
     return payload;
   });
 
-  app.setErrorHandler((err, req, reply) => {
+  app.setErrorHandler((err, _req, reply) => {
     if (err && err.statusCode === 429) {
       reply.code(429).send({ error: 'rate_limited' });
       return;
     }
-    process.stderr.write(`[orch:err] ${err && err.message}\n`);
+    if (err && err.statusCode && err.statusCode >= 400 && err.statusCode < 500) {
+      reply.code(err.statusCode).send({ error: err.code || 'bad_request' });
+      return;
+    }
+    process.stderr.write('[orch:err]\n');
     reply.code(500).send({ error: 'internal' });
   });
 
@@ -108,9 +147,9 @@ function buildApp(opts = {}) {
     return true;
   }
 
-  app.get('/health', async () => ({ ok: true }));
+  app.get('/health', { config: { rateLimit: false } }, async () => ({ ok: true }));
 
-  app.get('/', async (_req, reply) => {
+  app.get('/', { config: { rateLimit: false } }, async (_req, reply) => {
     reply.header('Content-Type', 'text/plain; charset=utf-8');
     return 'mega-privacy-proxy orchestrator';
   });
@@ -128,16 +167,25 @@ function buildApp(opts = {}) {
       reply.code(503).send({ error: 'no_workers' });
       return;
     }
+    pool.incInflight(worker.id);
+    // Decrement after a generous window — we don't get a callback when the
+    // browser actually finishes. This is a best-effort load balancer hint.
+    setTimeout(() => pool.decInflight(worker.id), 5 * 60 * 1000).unref();
     return {
       workerUrl: worker.url,
-      sessionToken: worker.sessionToken,
+      sessionToken: worker.sessionToken, // browser uses this for /meta and /stream
       workerId: worker.id,
+      // NOTE: internalToken is NEVER returned to the client.
     };
   });
 
-  app.post('/internal/bandwidth', async (req, reply) => {
+  // Worker -> orchestrator bandwidth reports. Authenticated with the
+  // internalToken which is ONLY known to the spawned worker and the
+  // orchestrator. The browser never sees this token.
+  app.post('/internal/bandwidth', { config: { rateLimit: false } }, async (req, reply) => {
     const tok = extractBearer(req);
-    const worker = pool.getBySessionToken(tok);
+    // Constant-time lookup
+    const worker = pool.getByInternalToken(tok);
     if (!worker) { reply.code(403).send({ error: 'forbidden' }); return; }
     const body = req.body || {};
     const bytesUsed = Number(body.bytesUsed);
@@ -168,17 +216,17 @@ async function start() {
     await app.listen({ port: CONFIG.PORT, host: '0.0.0.0' });
     process.stderr.write(`[orch] listening :${CONFIG.PORT}\n`);
     if (app.lifecycle && CONFIG.RENDER_API_KEY) {
-      app.lifecycle.onStartup().catch((e) => process.stderr.write(`[orch] startup spawn err ${e && e.message}\n`));
+      app.lifecycle.onStartup().catch(() => process.stderr.write('[orch] startup spawn err\n'));
       app.lifecycle.startPeriodicMaintenance(60000);
     } else {
       process.stderr.write('[orch] Render API not configured; workers will not auto-spawn.\n');
     }
-  } catch (err) {
-    process.stderr.write(`[orch] listen err ${err && err.message}\n`);
+  } catch (_) {
+    process.stderr.write('[orch] listen err\n');
     process.exit(1);
   }
 }
 
 if (require.main === module) start();
 
-module.exports = { buildApp, CONFIG };
+module.exports = { buildApp, CONFIG, MEGA_LINK_RE };

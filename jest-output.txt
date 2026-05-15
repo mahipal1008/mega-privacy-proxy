@@ -1,0 +1,116 @@
+[lifecycle]
+[lifecycle]
+FAIL tests/edge-cases.test.js
+  ΓùÅ edge cases ΓÇ║ zero-byte file streams empty body
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 200
+    Received: 400
+
+      33 |     const w = buildWorker({ config: { SESSION_TOKEN: 's', PORT: 0 } });
+      34 |     const r = await w.inject({ method: 'GET', url: '/stream?link=zero', headers: { Authorization: 'Bearer s' } });
+    > 35 |     expect(r.statusCode).toBe(200);
+         |                          ^
+      36 |     expect(r.rawPayload.length).toBe(0);
+      37 |   });
+      38 |
+
+      at Object.toBe (tests/edge-cases.test.js:35:26)
+
+FAIL tests/integration.test.js
+  ΓùÅ integration ΓÇ║ orchestrator -> worker -> bytes match
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 200
+    Received: 400
+
+      53 |       headers: { Authorization: 'Bearer ' + j.sessionToken },
+      54 |     });
+    > 55 |     expect(resp.status).toBe(200);
+         |                         ^
+      56 |     const buf = Buffer.from(await resp.arrayBuffer());
+      57 |     expect(buf.length).toBe(TOTAL);
+      58 |     for (let i = 0; i < TOTAL; i++) expect(buf[i]).toBe(i & 0xff);
+
+      at Object.toBe (tests/integration.test.js:55:25)
+
+  ΓùÅ integration ΓÇ║ concurrent downloads do not mix bytes
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 4096
+    Received: 24
+
+      70 |     }));
+      71 |     for (const b of results) {
+    > 72 |       expect(b.length).toBe(TOTAL);
+         |                        ^
+      73 |       for (let i = 0; i < TOTAL; i++) expect(b[i]).toBe(i & 0xff);
+      74 |     }
+      75 |     await worker.close();
+
+      at Object.toBe (tests/integration.test.js:72:24)
+
+FAIL tests/worker.test.js
+  ΓùÅ worker routes ΓÇ║ /meta with valid token returns shape
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 200
+    Received: 400
+
+      40 |       headers: { Authorization: 'Bearer ' + CONFIG.SESSION_TOKEN },
+      41 |     });
+    > 42 |     expect(r.statusCode).toBe(200);
+         |                          ^
+      43 |     const j = JSON.parse(r.body);
+      44 |     expect(j).toEqual({ filename: 'test.bin', fileSize: 1024, mimeType: 'application/octet-stream' });
+      45 |   });
+
+      at Object.toBe (tests/worker.test.js:42:26)
+
+  ΓùÅ worker routes ΓÇ║ /meta mega fail => 502
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 502
+    Received: 400
+
+      51 |       headers: { Authorization: 'Bearer ' + CONFIG.SESSION_TOKEN },
+      52 |     });
+    > 53 |     expect(r.statusCode).toBe(502);
+         |                          ^
+      54 |   });
+      55 |
+      56 |   test('/stream with valid token streams bytes', async () => {
+
+      at Object.toBe (tests/worker.test.js:53:26)
+
+  ΓùÅ worker routes ΓÇ║ /stream with valid token streams bytes
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 200
+    Received: 400
+
+      60 |       headers: { Authorization: 'Bearer ' + CONFIG.SESSION_TOKEN },
+      61 |     });
+    > 62 |     expect(r.statusCode).toBe(200);
+         |                          ^
+      63 |     expect(r.rawPayload.length).toBe(1024);
+      64 |     expect(r.headers['content-disposition']).toMatch(/attachment/);
+      65 |   });
+
+      at Object.toBe (tests/worker.test.js:62:26)
+
+PASS tests/orchestrator.test.js
+PASS tests/crypto.test.js
+
+Test Suites: 3 failed, 2 passed, 5 total
+Tests:       6 failed, 33 passed, 39 total
+Snapshots:   0 total
+Time:        5.996 s, estimated 7 s
+Ran all test suites.
+Force exiting Jest: Have you considered using `--detectOpenHandles` to detect async operations that kept running after all tests finished?

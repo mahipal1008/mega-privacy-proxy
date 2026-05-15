@@ -1,13 +1,20 @@
 'use strict';
 
 // ─────────────────────────────────────────────────────────────
-// MegaTunnel client — hardcoded orchestrator, folder support,
-// queue, multi-worker segmenting, always-on AES-256-GCM
+// MegaTunnel client — streams directly to disk via File System
+// Access API (no RAM accumulation). Falls back to Blob for
+// browsers without showSaveFilePicker (Firefox, Safari, mobile).
+//
+// Folders are enumerated and queued as individual files.
+// Files >3.5 GB auto-segment across fresh workers seamlessly.
 // ─────────────────────────────────────────────────────────────
 
 const ORCHESTRATOR_URL = 'https://mega-orchestrator.onrender.com';
-const SEGMENT_BYTES   = 3_500_000_000; // 3.5 GB — under worker BW_WARN
+const SEGMENT_BYTES   = 3_500_000_000;
+const BLOB_FALLBACK_MAX = 1_900_000_000; // ~1.9 GB Blob safety ceiling
 const FILE_LINK_RE    = /^https?:\/\/mega\.nz\/(file|folder)\/[A-Za-z0-9_-]+(#|%23)[A-Za-z0-9_-]+/i;
+
+const supportsFSA = typeof window !== 'undefined' && typeof window.showSaveFilePicker === 'function';
 
 const $ = (id) => document.getElementById(id);
 
@@ -34,16 +41,19 @@ function fmtSecs(s) {
   if (s < 3600) return `${Math.floor(s / 60)}m ${Math.ceil(s % 60)}s`;
   return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
 }
-function fmtFileIcon(name) {
+function fileIcon(name) {
   const ext = String(name || '').toLowerCase().split('.').pop();
-  if (['mp4','mkv','webm','mov','avi','flv'].includes(ext)) return '🎬';
-  if (['mp3','flac','wav','m4a','ogg','aac'].includes(ext)) return '🎵';
-  if (['jpg','jpeg','png','gif','webp','bmp','svg'].includes(ext)) return '🖼️';
-  if (['pdf','epub','mobi'].includes(ext)) return '📄';
-  if (['zip','rar','7z','tar','gz'].includes(ext)) return '📦';
-  if (['iso','dmg'].includes(ext)) return '💿';
+  if (['mp4','mkv','webm','mov','avi','flv','m4v'].includes(ext)) return '🎬';
+  if (['mp3','flac','wav','m4a','ogg','aac','opus'].includes(ext)) return '🎵';
+  if (['jpg','jpeg','png','gif','webp','bmp','svg','heic'].includes(ext)) return '🖼️';
+  if (['pdf','epub','mobi','djvu'].includes(ext)) return '📄';
+  if (['zip','rar','7z','tar','gz','xz','bz2'].includes(ext)) return '📦';
+  if (['iso','dmg','img'].includes(ext)) return '💿';
+  if (['exe','msi','apk','deb','rpm','appimage'].includes(ext)) return '⚙️';
+  if (['doc','docx','xls','xlsx','ppt','pptx','odt'].includes(ext)) return '📝';
   return '📁';
 }
+function escapeHtml(s) { return String(s || '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
 
 // ── Toast notifications ──────────────────────────────────────────────
 function toast(msg, type = '') {
@@ -52,7 +62,7 @@ function toast(msg, type = '') {
   t.className = 'toast ' + type;
   t.textContent = msg;
   host.appendChild(t);
-  setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 250); }, type === 'err' ? 5500 : 3500);
+  setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 250); }, type === 'err' ? 6000 : 3500);
 }
 
 // ── Orchestrator API ──────────────────────────────────────────────────
@@ -65,6 +75,7 @@ async function apiDownload(megaLink) {
     body: JSON.stringify({ megaLink }),
   });
   if (r.status === 403) throw new Error('Bad access token.');
+  if (r.status === 429) throw new Error('Rate limited. Wait a minute.');
   if (!r.ok) {
     const b = await r.json().catch(() => ({}));
     throw new Error(`Orchestrator ${r.status}: ${b.error || 'unknown'}`);
@@ -87,13 +98,14 @@ async function workerMeta(assignment, megaLink, childId) {
   const r = await fetch(u, { headers: { Authorization: 'Bearer ' + assignment.sessionToken } });
   if (!r.ok) {
     const b = await r.json().catch(() => ({}));
-    throw new Error(`Worker meta ${r.status}${b.detail ? ': ' + b.detail : ''}`);
+    throw new Error(`meta ${r.status}${b.detail ? ': ' + b.detail : ''}`);
   }
   return r.json();
 }
 
-// Stream one byte range, AES-encrypt each chunk in RAM, return [pkg...]
-async function streamSegment({ assignment, megaLink, childId, rangeStart, rangeEnd, key, onBytes, abortSignal }) {
+// Stream one byte range and write directly to writable (FSA) or push into chunks (fallback).
+// onBytes(bytesRead) called for progress, returns when range fully consumed.
+async function streamSegment({ assignment, megaLink, childId, rangeStart, rangeEnd, sink, onBytes, abortSignal }) {
   const u = assignment.workerUrl.replace(/\/$/, '') + '/stream?link=' + encodeURIComponent(megaLink) +
     (childId ? '&child=' + encodeURIComponent(childId) : '');
   const headers = { Authorization: 'Bearer ' + assignment.sessionToken };
@@ -101,37 +113,48 @@ async function streamSegment({ assignment, megaLink, childId, rangeStart, rangeE
     headers['Range'] = `bytes=${rangeStart}-${rangeEnd !== undefined ? rangeEnd : ''}`;
   }
   const r = await fetch(u, { headers, signal: abortSignal });
-  if (!r.ok && r.status !== 206) throw new Error('Worker stream ' + r.status);
-
+  if (!r.ok && r.status !== 206) throw new Error('stream ' + r.status);
   const reader = r.body.getReader();
-  const packages = [];
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-    const iv = window.MegaCrypto.generateIV();
-    const buf = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
-    const cipher = await window.MegaCrypto.encryptChunk(key, iv, buf);
-    const pkg = new Uint8Array(12 + cipher.byteLength);
-    pkg.set(iv, 0); pkg.set(new Uint8Array(cipher), 12);
-    packages.push(pkg);
+    await sink.write(value);
     onBytes(value.byteLength);
   }
-  return packages;
 }
 
-async function decryptAll(key, packages) {
-  const out = [];
-  for (const pkg of packages) {
-    const iv = pkg.slice(0, 12);
-    const data = await window.MegaCrypto.decryptChunk(key, iv, pkg.slice(12).buffer);
-    out.push(new Uint8Array(data));
-  }
-  return out;
+// ── Sinks ─────────────────────────────────────────────────────────────
+// FSA sink: writes directly to disk.
+function fsaSink(writable) {
+  return {
+    kind: 'fsa',
+    async write(chunk) { await writable.write(chunk); },
+    async finalize() { await writable.close(); },
+    async abort() { try { await writable.abort(); } catch {} },
+  };
+}
+// Blob sink: accumulates in RAM, finalize() triggers browser save.
+function blobSink(filename, mimeType) {
+  const chunks = [];
+  return {
+    kind: 'blob',
+    async write(chunk) { chunks.push(chunk); },
+    async finalize() {
+      const blob = new Blob(chunks, { type: mimeType || 'application/octet-stream' });
+      const a = document.createElement('a');
+      const url = URL.createObjectURL(blob);
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click();
+      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1500);
+    },
+    async abort() { chunks.length = 0; },
+  };
 }
 
 // ── Queue ─────────────────────────────────────────────────────────────
-const queue = []; // { id, megaLink, childId, name, size, status, received, speed, startedAt, lastTick, abort, error }
+const queue = [];
 let queueIdCounter = 0;
+let running = false;
 
 function makeItem(megaLink, childId, name, size) {
   return {
@@ -146,7 +169,6 @@ function renderQueue() {
   if (queue.length === 0) { sec.classList.add('hidden'); return; }
   sec.classList.remove('hidden');
   $('queue-count').textContent = `· ${queue.length} item${queue.length === 1 ? '' : 's'}`;
-  // Build list
   list.innerHTML = '';
   for (const it of queue) {
     const li = document.createElement('li');
@@ -154,10 +176,10 @@ function renderQueue() {
     const pct = it.size > 0 ? (it.received / it.size) * 100 : 0;
     li.innerHTML = `
       <div class="q-row">
-        <span class="q-icon">${fmtFileIcon(it.name)}</span>
+        <span class="q-icon">${fileIcon(it.name)}</span>
         <div class="q-info">
           <div class="q-name" title="${escapeHtml(it.name)}">${escapeHtml(it.name)}</div>
-          <div class="q-meta">${fmtBytes(it.received)} / ${fmtBytes(it.size)} · ${it.speed > 0 ? fmtBytes(it.speed) + '/s' : ''}</div>
+          <div class="q-meta">${fmtBytes(it.received)} / ${fmtBytes(it.size)}${it.speed > 0 ? ' · ' + fmtBytes(it.speed) + '/s' : ''}</div>
         </div>
         <span class="q-status ${it.status === 'done' ? 's-done' : it.status === 'error' ? 's-err' : ''}">${statusLabel(it)}</span>
         <div class="q-actions">
@@ -172,7 +194,6 @@ function renderQueue() {
   }
   renderTotals();
 }
-function escapeHtml(s) { return String(s || '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
 function statusLabel(it) {
   if (it.status === 'done') return '✓ Done';
   if (it.status === 'error') return '✗ ' + (it.error || 'Error');
@@ -197,29 +218,28 @@ async function addLink(link) {
   link = (link || '').trim();
   if (!FILE_LINK_RE.test(link)) { toast('Not a valid MEGA link', 'err'); return; }
   toast('Resolving link…');
-  let assignment;
-  try { assignment = await apiDownload(link); }
-  catch (e) { toast(e.message, 'err'); return; }
-
-  let meta;
-  try { meta = await workerMeta(assignment, link); }
-  catch (e) { toast('Could not read MEGA link: ' + e.message, 'err'); return; }
-
-  if (meta.type === 'folder') {
-    if (!meta.children || meta.children.length === 0) {
-      toast('Folder is empty.', 'err'); return;
+  $('add-btn').disabled = true;
+  try {
+    const assignment = await apiDownload(link);
+    const meta = await workerMeta(assignment, link);
+    if (meta.type === 'folder') {
+      if (!meta.children || meta.children.length === 0) { toast('Folder is empty.', 'err'); return; }
+      for (const c of meta.children) queue.push(makeItem(link, c.id, c.path || c.name, c.size));
+      toast(`Folder added: ${meta.children.length} file${meta.children.length === 1 ? '' : 's'} (${fmtBytes(meta.fileSize)})`, 'ok');
+    } else {
+      queue.push(makeItem(link, undefined, meta.filename, meta.fileSize));
+      toast(`Added: ${meta.filename} (${fmtBytes(meta.fileSize)})`, 'ok');
     }
-    for (const c of meta.children) queue.push(makeItem(link, c.id, c.path || c.name, c.size));
-    toast(`Folder added: ${meta.children.length} files (${fmtBytes(meta.fileSize)})`, 'ok');
-  } else {
-    queue.push(makeItem(link, undefined, meta.filename, meta.fileSize));
-    toast(`Added: ${meta.filename} (${fmtBytes(meta.fileSize)})`, 'ok');
+    renderQueue();
+    $('mega-link').value = '';
+  } catch (e) {
+    toast(e.message || 'Failed to add link', 'err');
+  } finally {
+    $('add-btn').disabled = false;
   }
-  renderQueue();
-  $('mega-link').value = '';
 }
 
-// ── Run one queue item end-to-end ─────────────────────────────────────
+// ── Run one item end-to-end ───────────────────────────────────────────
 async function runItem(item) {
   if (item.status !== 'queued') return;
   item.status = 'active'; item.received = 0; item.error = null;
@@ -227,20 +247,35 @@ async function runItem(item) {
   const aborter = new AbortController(); item.abort = aborter;
   renderQueue();
 
+  let sink = null;
   try {
-    // Per-download AES-256-GCM key
-    const sessionKey = await window.MegaCrypto.generateKey();
-
-    // First assignment
-    let firstAssignment = await apiDownload(item.megaLink);
-
-    // Refresh meta to confirm size (folder children: meta carries size already)
-    let meta;
-    try {
-      meta = await workerMeta(firstAssignment, item.megaLink, item.childId);
-    } catch (e) { throw new Error('Meta: ' + e.message); }
-    if (meta.type === 'folder') throw new Error('Folder meta on file slot');
+    // Refresh meta + first assignment together
+    const firstAssignment = await apiDownload(item.megaLink);
+    const meta = await workerMeta(firstAssignment, item.megaLink, item.childId);
+    if (meta.type === 'folder') throw new Error('folder slot got folder meta');
     item.size = meta.fileSize; item.name = meta.filename || item.name;
+
+    // Set up sink: prefer File System Access API (true streaming, unlimited size)
+    const filename = (item.name || 'download.bin').split('/').pop();
+    if (supportsFSA) {
+      let handle;
+      try {
+        handle = await window.showSaveFilePicker({
+          suggestedName: filename,
+          types: [{ description: 'File', accept: { '*/*': ['.' + (filename.split('.').pop() || 'bin')] } }],
+        });
+      } catch (e) {
+        if (e && e.name === 'AbortError') { item.status = 'queued'; renderQueue(); return; }
+        throw e;
+      }
+      const writable = await handle.createWritable();
+      sink = fsaSink(writable);
+    } else {
+      if (item.size > BLOB_FALLBACK_MAX) {
+        throw new Error('Browser lacks File System Access. Use Chrome/Edge for files >1.9 GB.');
+      }
+      sink = blobSink(filename, meta.mimeType);
+    }
 
     // Plan segments
     const totalSize = item.size;
@@ -256,22 +291,21 @@ async function runItem(item) {
       }
     }
 
-    const allPkgs = [];
+    // Stream each segment in order to the sink
     for (let i = 0; i < segments.length; i++) {
       if (aborter.signal.aborted) throw new Error('cancelled');
       const seg = segments[i];
-      if (!seg.assignment) { seg.assignment = await apiDownload(item.megaLink); }
-      // Pre-fetch next
+      if (!seg.assignment) seg.assignment = await apiDownload(item.megaLink);
       if (i + 1 < segments.length && !segments[i + 1].assignment) {
         apiDownload(item.megaLink).then(a => { segments[i + 1].assignment = a; }).catch(() => {});
       }
       let retries = 2;
       while (true) {
         try {
-          const pkgs = await streamSegment({
+          await streamSegment({
             assignment: seg.assignment, megaLink: item.megaLink, childId: item.childId,
-            rangeStart: seg.start, rangeEnd: seg.end, key: sessionKey,
-            abortSignal: aborter.signal,
+            rangeStart: seg.start, rangeEnd: seg.end,
+            sink, abortSignal: aborter.signal,
             onBytes: (b) => {
               item.received += b;
               const now = Date.now();
@@ -283,74 +317,73 @@ async function runItem(item) {
               }
             },
           });
-          allPkgs.push(...pkgs);
           break;
         } catch (e) {
           if (aborter.signal.aborted) throw new Error('cancelled');
           if (--retries < 0) throw e;
-          try { seg.assignment = await apiDownload(item.megaLink); } catch (e2) { throw new Error('retry assign: ' + e2.message); }
+          try { seg.assignment = await apiDownload(item.megaLink); }
+          catch (e2) { throw new Error('retry assign: ' + e2.message); }
         }
       }
     }
 
-    // Decrypt + save
-    const plainChunks = await decryptAll(sessionKey, allPkgs);
-    const blob = new Blob(plainChunks, { type: meta.mimeType || 'application/octet-stream' });
-    const a = document.createElement('a');
-    const objUrl = URL.createObjectURL(blob);
-    a.href = objUrl;
-    // Filename: keep only the basename when path contains slashes (folder)
-    a.download = (item.name || 'download.bin').split('/').pop();
-    document.body.appendChild(a); a.click();
-    setTimeout(() => { URL.revokeObjectURL(objUrl); a.remove(); }, 1500);
-
+    await sink.finalize();
     item.status = 'done'; item.speed = 0; item.received = item.size;
     renderQueue();
-    toast('Saved: ' + a.download, 'ok');
+    toast('Saved: ' + filename, 'ok');
   } catch (e) {
-    item.status = (e && e.message === 'cancelled') ? 'queued' : 'error';
-    item.error = e && e.message ? e.message.slice(0, 40) : 'error';
+    if (sink) await sink.abort();
+    if (e && e.message === 'cancelled') { item.status = 'queued'; }
+    else { item.status = 'error'; item.error = (e && e.message ? e.message : 'error').slice(0, 60); toast(item.name + ': ' + item.error, 'err'); }
     item.speed = 0;
     renderQueue();
-    if (item.status === 'error') toast(item.name + ': ' + item.error, 'err');
   } finally {
     item.abort = null;
   }
 }
 
 async function startAll() {
-  // Run one at a time to keep memory bounded; large files still get parallel chunk fetching inside worker
-  for (const it of queue) {
-    if (it.status === 'queued') {
-      await runItem(it);
+  if (running) return; running = true;
+  $('start-all-btn').disabled = true;
+  try {
+    for (const it of queue) {
+      if (it.status === 'queued') await runItem(it);
     }
+  } finally {
+    running = false;
+    $('start-all-btn').disabled = false;
+    refreshPoolBadge();
   }
 }
 
+// ── Pool status badge (live) ──────────────────────────────────────────
+async function refreshPoolBadge() {
+  const s = await apiStatus();
+  if (!s) return;
+  const net = $('net-badge');
+  const active = (s.workers && s.workers.active) || 0;
+  const warming = (s.workers && s.workers.warming) || 0;
+  net.textContent = `⚡ ${active} active${warming > 0 ? ' · ' + warming + ' warming' : ''}`;
+  net.className = 'badge ' + (active > 0 ? 'ok' : 'warn');
+}
+
 // ── UI wiring ─────────────────────────────────────────────────────────
-window.addEventListener('DOMContentLoaded', async () => {
-  // Token & auth badge
+window.addEventListener('DOMContentLoaded', () => {
   const tok = getToken();
   const badge = $('auth-badge');
   if (tok) { badge.textContent = '🔒 Authorized'; badge.classList.add('ok'); }
   else { badge.textContent = '⚠ Token needed'; badge.classList.add('warn'); $('input-hint').innerHTML = 'Append <code>#yourtoken</code> to this page URL and reload, then bookmark.'; }
 
-  // Pool status badge
-  if (tok) {
-    apiStatus().then(s => {
-      if (!s) return;
-      const net = $('net-badge');
-      const active = (s.workers && (s.workers.active || 0)) || 0;
-      net.textContent = `⚡ ${active} worker${active === 1 ? '' : 's'}`;
-      net.className = 'badge ' + (active > 0 ? 'ok' : 'warn');
-    });
+  if (!supportsFSA) {
+    const hint = $('input-hint');
+    if (hint) hint.innerHTML += '<br><span style="color:#ffb13d">⚠ Browser doesn\'t support File System Access. Files >1.9 GB unsupported. Use Chrome/Edge.</span>';
   }
 
-  // Add button + enter key
+  refreshPoolBadge();
+  setInterval(refreshPoolBadge, 15000);
+
   $('add-btn').addEventListener('click', () => addLink($('mega-link').value));
   $('mega-link').addEventListener('keydown', (e) => { if (e.key === 'Enter') addLink($('mega-link').value); });
-
-  // Queue actions
   $('start-all-btn').addEventListener('click', startAll);
   $('clear-done-btn').addEventListener('click', () => {
     for (let i = queue.length - 1; i >= 0; i--) if (queue[i].status === 'done') queue.splice(i, 1);

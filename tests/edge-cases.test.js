@@ -2,16 +2,19 @@
 
 jest.mock('../worker/mega-stream', () => {
   const { Readable } = require('stream');
+  const keyOf = (link) => (String(link).match(/\/file\/([A-Za-z0-9_-]+)#/) || [])[1] || '';
   return {
     authenticate: jest.fn(async () => ({})),
     getMeta: jest.fn(async (link) => {
-      if (link === 'authfail') throw new Error('auth');
-      if (link === 'zero') return { filename: 'z', fileSize: 0, mimeType: 'application/octet-stream' };
+      const k = keyOf(link);
+      if (k === 'authfx') throw new Error('auth');
+      if (k === 'zerokk') return { filename: 'z', fileSize: 0, mimeType: 'application/octet-stream' };
       return { filename: 'x', fileSize: 16, mimeType: 'application/octet-stream' };
     }),
-    streamFile: jest.fn((_link, start = 0, end = 15) => {
-      if (_link === 'zero') return Readable.from([]);
-      if (_link === 'neterr') {
+    streamFile: jest.fn((link, start = 0, end = 15) => {
+      const k = (String(link).match(/\/file\/([A-Za-z0-9_-]+)#/) || [])[1] || '';
+      if (k === 'zerokk') return Readable.from([]);
+      if (k === 'neterr') {
         const r = new Readable({ read(){} });
         process.nextTick(() => r.destroy(new Error('network drop')));
         return r;
@@ -20,6 +23,8 @@ jest.mock('../worker/mega-stream', () => {
     }),
   };
 });
+
+const LINK_ZERO = 'https://mega.nz/file/zerokk#0123456789abcdef0123';
 
 const { Pool, STATUS } = require('../orchestrator/pool');
 const { buildApp: buildOrch } = require('../orchestrator/index');
@@ -31,7 +36,7 @@ const TOK = 'test-personal-token-1234567890abcdef';
 describe('edge cases', () => {
   test('zero-byte file streams empty body', async () => {
     const w = buildWorker({ config: { SESSION_TOKEN: 's', PORT: 0 } });
-    const r = await w.inject({ method: 'GET', url: '/stream?link=zero', headers: { Authorization: 'Bearer s' } });
+    const r = await w.inject({ method: 'GET', url: '/stream?link=' + encodeURIComponent(LINK_ZERO), headers: { Authorization: 'Bearer s' } });
     expect(r.statusCode).toBe(200);
     expect(r.rawPayload.length).toBe(0);
   });

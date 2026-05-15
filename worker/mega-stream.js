@@ -1,6 +1,6 @@
 'use strict';
 
-const { Readable, PassThrough } = require('stream');
+const { PassThrough } = require('stream');
 
 let megaLib = null;
 function getMega() {
@@ -98,12 +98,17 @@ function flattenChildren(folder, prefix = '') {
   return out;
 }
 
+// Stream a MEGA file (or child of folder) with full backpressure.
+// Single sequential pipe — NO multi-part RAM buffering. Bounded memory.
 function streamFile(megaLink, rangeStart, rangeEnd, childId) {
   const root = fromUrl(megaLink);
   const opts = {};
   if (typeof rangeStart === 'number' && rangeStart >= 0) opts.start = rangeStart;
-  if (typeof rangeEnd === 'number' && rangeEnd > 0) opts.end = rangeEnd;
-  const passthrough = new PassThrough();
+  // Accept end === 0 (legitimate 1-byte range probe).
+  if (typeof rangeEnd === 'number' && rangeEnd >= 0) opts.end = rangeEnd;
+  const passthrough = new PassThrough({ highWaterMark: 4 * 1024 * 1024 });
+  let upstream = null;
+  passthrough.on('close', () => { try { upstream && upstream.destroy(); } catch (_) {} });
   Promise.resolve()
     .then(() => loadAttributes(root))
     .then(() => {
@@ -115,45 +120,16 @@ function streamFile(megaLink, rangeStart, rangeEnd, childId) {
         if (file.directory) throw new Error('child is folder');
       }
       const size = file.size || 0;
-      const start = opts.start || 0;
-      const end = typeof opts.end === 'number' ? opts.end : Math.max(0, size - 1);
-      const length = Math.max(0, end - start + 1);
-      const CHUNK = 50 * 1024 * 1024;
-      const desired = Math.max(1, Math.ceil(length / CHUNK));
-      const parts = Math.min(8, desired);
-      if (parts <= 1 || length === 0) {
-        const s = file.download({ start, end });
-        s.on('error', (e) => passthrough.destroy(e));
-        s.pipe(passthrough);
-        return;
-      }
-      const partSize = Math.ceil(length / parts);
-      const ranges = [];
-      for (let i = 0; i < parts; i++) {
-        const ps = start + i * partSize;
-        if (ps > end) break;
-        const pe = Math.min(end, ps + partSize - 1);
-        ranges.push({ start: ps, end: pe });
-      }
-      const buffers = new Array(ranges.length).fill(null);
-      let nextToWrite = 0;
-      let cancelled = false;
-      function tryDrain() {
-        while (!cancelled && nextToWrite < ranges.length && buffers[nextToWrite]) {
-          const chunks = buffers[nextToWrite];
-          buffers[nextToWrite] = null;
-          for (const c of chunks) passthrough.write(c);
-          nextToWrite++;
-        }
-        if (!cancelled && nextToWrite >= ranges.length) passthrough.end();
-      }
-      ranges.forEach((r, i) => {
-        const acc = [];
-        const s = file.download({ start: r.start, end: r.end });
-        s.on('data', (d) => acc.push(d));
-        s.on('end', () => { buffers[i] = acc; tryDrain(); });
-        s.on('error', (e) => { cancelled = true; passthrough.destroy(e); });
-      });
+      const start = typeof opts.start === 'number' ? opts.start : 0;
+      const end = typeof opts.end === 'number'
+        ? Math.min(opts.end, Math.max(0, size - 1))
+        : Math.max(0, size - 1);
+      if (size === 0) { passthrough.end(); return; }
+      if (start > end) { passthrough.destroy(new Error('range_not_satisfiable')); return; }
+      upstream = file.download({ start, end });
+      upstream.on('error', (e) => passthrough.destroy(e));
+      // pipe applies backpressure automatically.
+      upstream.pipe(passthrough);
     })
     .catch((err) => passthrough.destroy(err));
   return passthrough;

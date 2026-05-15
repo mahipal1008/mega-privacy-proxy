@@ -22,6 +22,7 @@ const { buildApp: buildWorker } = require('../worker/index');
 const PERSONAL = 'test-personal-token-1234567890abcdef';
 const SESS = 'sess-integ-aaaaa';
 const TOTAL = 4096;
+const LINK = 'https://mega.nz/file/abcdef#0123456789abcdef0123';
 
 function setupOrchestrator(workerUrl) {
   const pool = new Pool();
@@ -49,7 +50,7 @@ describe('integration', () => {
     const j = JSON.parse(r.body);
     expect(j.workerUrl).toBe(workerUrl);
 
-    const resp = await fetch(j.workerUrl + '/stream?link=' + encodeURIComponent('any'), {
+    const resp = await fetch(j.workerUrl + '/stream?link=' + encodeURIComponent(LINK), {
       headers: { Authorization: 'Bearer ' + j.sessionToken },
     });
     expect(resp.status).toBe(200);
@@ -65,7 +66,7 @@ describe('integration', () => {
     await worker.listen({ port: 0, host: '127.0.0.1' });
     const url = `http://127.0.0.1:${worker.server.address().port}`;
     const results = await Promise.all([1,2,3].map(async () => {
-      const resp = await fetch(url + '/stream?link=any', { headers: { Authorization: 'Bearer ' + SESS } });
+      const resp = await fetch(url + '/stream?link=' + encodeURIComponent(LINK), { headers: { Authorization: 'Bearer ' + SESS } });
       return Buffer.from(await resp.arrayBuffer());
     }));
     for (const b of results) {

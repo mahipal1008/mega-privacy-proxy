@@ -7,25 +7,29 @@ const url = require('url');
 const indexUrl = url.pathToFileURL(path.join(__dirname, '..', 'client', 'index.html')).href;
 
 test.describe('client UI', () => {
-  test('loads with dark theme + fields present', async ({ page }) => {
+  test('loads with brand + input field present', async ({ page }) => {
     await page.goto(indexUrl);
-    await expect(page.locator('h1')).toHaveText('MEGA Privacy Proxy');
+    await expect(page.locator('.brand-name')).toHaveText('MegaTunnel');
+    await expect(page.locator('h1')).toContainText('Download MEGA links');
     await expect(page.locator('#mega-link')).toBeVisible();
-    await expect(page.locator('#orchestrator-url')).toBeVisible();
-    await expect(page.locator('#personal-token')).toBeVisible();
-    const bg = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
-    expect(bg).toMatch(/rgb\(13, 17, 23\)/);
+    await expect(page.locator('#add-btn')).toBeVisible();
   });
 
-  test('localStorage persists URL + token but nothing else', async ({ page }) => {
+  test('no-token state shows warning hint', async ({ page }) => {
     await page.goto(indexUrl);
-    await page.fill('#orchestrator-url', 'https://orch.example.com');
-    await page.fill('#personal-token', 'secret-token');
-    await page.fill('#mega-link', 'https://mega.nz/file/aaaaaa#bbbbbbbbbbbbbbbbbbbb');
-    await page.click('#download-btn');
-    await page.waitForTimeout(500);
-    const keys = await page.evaluate(() => Object.keys(localStorage));
-    expect(keys.sort()).toEqual(['orchestratorUrl', 'personalToken']);
+    await page.waitForLoadState('networkidle');
+    await expect(page.locator('#auth-badge')).toContainText(/Token needed|Authorized/);
+  });
+
+  test('token via URL fragment is stored in sessionStorage and stripped from URL', async ({ page }) => {
+    await page.goto(indexUrl + '#mysecret123');
+    await page.waitForFunction(() => sessionStorage.getItem('_mtt') !== null);
+    const tok = await page.evaluate(() => sessionStorage.getItem('_mtt'));
+    expect(tok).toBe('mysecret123');
+    expect(page.url()).not.toContain('#mysecret123');
+    // sensitive token NEVER stored in localStorage
+    const lsKeys = await page.evaluate(() => Object.keys(localStorage));
+    expect(lsKeys).toEqual([]);
   });
 
   test('crypto round-trip in real browser', async ({ page }) => {
@@ -41,14 +45,11 @@ test.describe('client UI', () => {
     expect(ok).toBe(true);
   });
 
-  test('Enter in link field triggers download attempt', async ({ page }) => {
-    await page.goto(indexUrl);
-    await page.fill('#orchestrator-url', 'https://orch.invalid');
-    await page.fill('#personal-token', 'tok');
-    await page.fill('#mega-link', 'https://mega.nz/file/aaaaaa#bbbbbbbbbbbbbbbbbbbb');
-    await page.locator('#mega-link').press('Enter');
-    await page.waitForTimeout(800);
-    await expect(page.locator('#status-log')).not.toHaveText('');
+  test('invalid MEGA link shows error toast', async ({ page }) => {
+    await page.goto(indexUrl + '#testtok');
+    await page.fill('#mega-link', 'https://evil.example.com/x');
+    await page.click('#add-btn');
+    await expect(page.locator('.toast')).toContainText(/valid MEGA link/i);
   });
 
   test('mobile viewport renders', async ({ page }) => {

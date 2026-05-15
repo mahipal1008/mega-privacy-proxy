@@ -18,7 +18,7 @@ Personal-use MEGA download privacy proxy. Three layers:
 
 • MEGA sees only the Worker's Render IP.
 • Render sees only TLS-encrypted bytes (E2E from worker to browser).
-• No logs, no disk writes, no DB. All state in worker/orchestrator RAM.
+• No disk writes, no DB, no analytics — all state in worker/orchestrator RAM. Process stderr (used by Render's log stream) is limited to non-sensitive lifecycle tags like `[lifecycle]`, `[pool]`, `[render-api]`; MEGA links, tokens, filenames, and error messages are NEVER written to stderr.
 • Every ~4 GB a worker is permanently killed via Render API and a fresh one spawned.
 ```
 

@@ -90,6 +90,7 @@ describe('lifecycle', () => {
     const rapi = fakeRender();
     const lc = createLifecycle({ pool, renderApi: rapi, config: TEST_CONFIG });
     await lc.onStartup();
+    await lc.waitForPromotions();
     expect(rapi.spawnWorker).toHaveBeenCalledTimes(2);
     expect(pool.countByStatus(STATUS.ACTIVE)).toBe(2);
   });
@@ -100,6 +101,9 @@ describe('lifecycle', () => {
     const rapi = fakeRender();
     const lc = createLifecycle({ pool, renderApi: rapi, config: TEST_CONFIG });
     await lc.onStartup();
+    jest.useRealTimers();
+    await lc.waitForPromotions();
+    jest.useFakeTimers();
     rapi.spawnWorker.mockClear();
     const w = pool.getActiveWorker();
     await lc.onBandwidthReport(w.id, TEST_CONFIG.BW_WARN_BYTES);
@@ -116,6 +120,7 @@ describe('lifecycle', () => {
     const rapi = fakeRender();
     const lc = createLifecycle({ pool, renderApi: rapi, config: TEST_CONFIG });
     await lc.ensureMinWorkers();
+    await lc.waitForPromotions();
     expect(pool.getAllWorkers().length).toBe(2);
   });
 });
@@ -123,7 +128,7 @@ describe('lifecycle', () => {
 describe('orchestrator routes', () => {
   function build() {
     const pool = new Pool();
-    pool.addWorker({ id: 'w1', sessionToken: 'st_w1', url: 'https://w.test', status: STATUS.ACTIVE });
+    pool.addWorker({ id: 'w1', sessionToken: 'st_w1', internalToken: 'it_w1', url: 'https://w.test', status: STATUS.ACTIVE });
     return buildApp({ pool, config: TEST_CONFIG });
   }
 
@@ -163,13 +168,21 @@ describe('orchestrator routes', () => {
     expect(r.statusCode).toBe(400);
   });
 
-  test('POST /internal/bandwidth requires session token', async () => {
+  test('POST /internal/bandwidth requires internal token', async () => {
     const app = build();
     const r = await app.inject({ method: 'POST', url: '/internal/bandwidth', payload: { bytesUsed: 1 } });
     expect(r.statusCode).toBe(403);
-    const r2 = await app.inject({
+    // Session token should NOT be accepted for internal bandwidth reports
+    const r0 = await app.inject({
       method: 'POST', url: '/internal/bandwidth',
       headers: { Authorization: 'Bearer st_w1', 'Content-Type': 'application/json' },
+      payload: { bytesUsed: 1234 },
+    });
+    expect(r0.statusCode).toBe(403);
+    // Internal token (set in build()) is accepted
+    const r2 = await app.inject({
+      method: 'POST', url: '/internal/bandwidth',
+      headers: { Authorization: 'Bearer it_w1', 'Content-Type': 'application/json' },
       payload: { bytesUsed: 1234 },
     });
     expect(r2.statusCode).toBe(200);
