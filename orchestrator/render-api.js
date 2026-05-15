@@ -67,7 +67,7 @@ function makeClient({ apiKey, ownerId, repo, fetchImpl }) {
       rootDir: 'worker',
       serviceDetails: {
         env: 'node',
-        plan: 'starter',
+        plan: process.env.WORKER_PLAN || 'standard',
         region: 'oregon',
         envSpecificDetails: {
           buildCommand: 'npm install',
