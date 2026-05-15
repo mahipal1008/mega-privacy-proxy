@@ -1,48 +1,75 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>MEGA Privacy Proxy</title>
-<link rel="stylesheet" href="style.css" />
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>MegaTunnel — Private MEGA Downloader</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ctext y='20' font-size='22'%3E%F0%9F%94%92%3C/text%3E%3C/svg%3E" />
 </head>
 <body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">🔒</span>
+      <span class="brand-name">MegaTunnel</span>
+    </div>
+    <div class="topbar-meta">
+      <span class="badge" id="auth-badge">checking…</span>
+      <span class="badge ok" id="net-badge" title="Workers online">⚡ 0</span>
+    </div>
+  </header>
+
   <main class="container">
-    <h1>MEGA Privacy Proxy</h1>
-    <p class="subtitle">Personal-use private download tunnel</p>
-
-    <section class="settings">
-      <label for="orchestrator-url">Orchestrator URL</label>
-      <input id="orchestrator-url" type="url" placeholder="https://mega-orchestrator.onrender.com" autocomplete="off" />
-      <small class="hint" id="token-status">🔒 AES-GCM encryption always on · Add <code>#yourtoken</code> to the page URL once, then bookmark it</small>
+    <section class="hero">
+      <h1>Download MEGA links — privately, without limits</h1>
+      <p class="lead">Zero-knowledge AES-256 encryption · Auto IP rotation · Folders &amp; files · No bandwidth caps</p>
     </section>
 
-    <section class="downloader">
-      <label for="mega-link">MEGA Link</label>
-      <input id="mega-link" type="url" placeholder="https://mega.nz/file/…" autocomplete="off" />
-      <button id="download-btn" type="button">Download</button>
-    </section>
-
-    <section class="progress">
-      <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
-      <div class="stats">
-        <div><span class="stat-label">Progress:</span> <span id="progress-text">–</span></div>
-        <div><span class="stat-label">Speed:</span> <span id="speed">–</span></div>
-        <div><span class="stat-label">ETA:</span> <span id="eta">–</span></div>
+    <section class="card input-card">
+      <div class="input-row">
+        <input id="mega-link" type="url" placeholder="Paste any mega.nz/file/… or mega.nz/folder/… link"
+               autocomplete="off" spellcheck="false" />
+        <button id="add-btn" type="button" class="btn-primary">
+          <span class="btn-text">Add</span>
+        </button>
       </div>
+      <div class="input-hint" id="input-hint">Press Enter or click Add. Folder links list all files.</div>
     </section>
 
-    <section class="log-section">
-      <h3>Recent Events</h3>
-      <pre id="status-log" class="status-log"></pre>
+    <section id="queue-section" class="card queue-card hidden">
+      <div class="queue-header">
+        <h2>Downloads <span id="queue-count" class="muted"></span></h2>
+        <div class="queue-actions">
+          <button id="start-all-btn" type="button" class="btn-secondary">Start all</button>
+          <button id="clear-done-btn" type="button" class="btn-ghost">Clear finished</button>
+        </div>
+      </div>
+      <div class="totals">
+        <div class="stat"><span class="stat-num" id="total-progress">0%</span><span class="stat-lbl">Total</span></div>
+        <div class="stat"><span class="stat-num" id="total-speed">– /s</span><span class="stat-lbl">Speed</span></div>
+        <div class="stat"><span class="stat-num" id="total-eta">–</span><span class="stat-lbl">ETA</span></div>
+        <div class="stat"><span class="stat-num" id="total-size">0 B</span><span class="stat-lbl">Total size</span></div>
+      </div>
+      <ul id="queue-list" class="queue-list"></ul>
     </section>
 
-    <div id="error-box" class="error" role="alert"></div>
-
-    <footer>
-      <small>Personal use only. Bypassing MEGA's bandwidth limits may violate MEGA's Terms of Service.</small>
-    </footer>
+    <section class="card info-card">
+      <h3>How privacy works here</h3>
+      <ul class="info-list">
+        <li><strong>Your IP never reaches MEGA.</strong> Disposable cloud workers fetch on your behalf and are destroyed after 4 GB.</li>
+        <li><strong>Server can't read your files.</strong> Every byte is re-encrypted in your browser with a fresh AES-256-GCM key.</li>
+        <li><strong>No logs, no storage.</strong> Zero disk writes anywhere — RAM-only proxy chain.</li>
+        <li><strong>Unlimited bandwidth.</strong> Files &gt; 3.5 GB auto-split across fresh workers seamlessly.</li>
+      </ul>
+    </section>
   </main>
+
+  <div id="toast-host" class="toast-host" aria-live="polite"></div>
+
+  <footer class="footer">
+    <small>Personal use only. Bypassing MEGA's bandwidth caps may violate MEGA's Terms of Service.</small>
+  </footer>
 
   <script src="crypto.js"></script>
   <script src="downloader.js"></script>

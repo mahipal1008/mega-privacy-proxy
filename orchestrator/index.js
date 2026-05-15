@@ -44,7 +44,7 @@ function extractBearer(req) {
   return m ? m[1].trim() : '';
 }
 
-const MEGA_LINK_RE = /^https?:\/\/mega\.(nz|co\.nz)\/(file\/[A-Za-z0-9_-]{6,}#[A-Za-z0-9_-]{16,}|#![A-Za-z0-9_-]{6,}![A-Za-z0-9_-]{16,})/;
+const MEGA_LINK_RE = /^https?:\/\/mega\.(nz|co\.nz)\/(file\/[A-Za-z0-9_-]{6,}#[A-Za-z0-9_-]{16,}|folder\/[A-Za-z0-9_-]{6,}#[A-Za-z0-9_-]{16,}|#![A-Za-z0-9_-]{6,}![A-Za-z0-9_-]{16,}|#F![A-Za-z0-9_-]{6,}![A-Za-z0-9_-]{16,})/;
 
 function buildApp(opts = {}) {
   const config = { ...CONFIG, ...(opts.config || {}) };

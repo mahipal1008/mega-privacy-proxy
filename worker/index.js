@@ -57,6 +57,19 @@ function buildApp(opts = {}) {
     reply.header('X-Frame-Options', 'DENY');
     reply.header('Referrer-Policy', 'no-referrer');
     reply.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    // CORS — browser hits workers directly for /meta and /stream
+    const origin = req.headers && req.headers.origin;
+    if (origin) {
+      reply.header('Access-Control-Allow-Origin', origin);
+      reply.header('Vary', 'Origin');
+      reply.header('Access-Control-Allow-Headers', 'Authorization, Content-Type, Range');
+      reply.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+      reply.header('Access-Control-Expose-Headers', 'Content-Range, Content-Length, X-File-Size');
+      reply.header('Access-Control-Max-Age', '600');
+    }
+    if (req.method === 'OPTIONS') {
+      reply.code(204).send();
+    }
   });
 
   app.setErrorHandler((err, req, reply) => {
@@ -99,26 +112,29 @@ function buildApp(opts = {}) {
   app.get('/meta', async (req, reply) => {
     if (!requireSession(req, reply)) return;
     const megaLink = String((req.query && req.query.link) || '').trim();
+    const childId = String((req.query && req.query.child) || '').trim() || undefined;
     if (!megaLink) { reply.code(400).send({ error: 'missing_link' }); return; }
     try {
-      const meta = await stream.getMeta(megaLink);
+      const meta = await stream.getMeta(megaLink, childId);
       return meta;
     } catch (err) {
       process.stderr.write(`[worker] meta err ${err && err.message}\n`);
-      reply.code(502).send({ error: 'mega_error' });
+      reply.code(502).send({ error: 'mega_error', detail: String(err && err.message || '').slice(0, 80) });
     }
   });
 
   app.get('/stream', async (req, reply) => {
     if (!requireSession(req, reply)) return;
     const megaLink = String((req.query && req.query.link) || '').trim();
+    const childId = String((req.query && req.query.child) || '').trim() || undefined;
     if (!megaLink) { reply.code(400).send({ error: 'missing_link' }); return; }
     let meta;
-    try { meta = await stream.getMeta(megaLink); } catch (e) {
+    try { meta = await stream.getMeta(megaLink, childId); } catch (e) {
       process.stderr.write(`[worker] meta err ${e && e.message}\n`);
       reply.code(502).send({ error: 'mega_error' });
       return;
     }
+    if (meta.type === 'folder') { reply.code(400).send({ error: 'folder_link_needs_child' }); return; }
     const range = parseRange(req.headers && req.headers.range, meta.fileSize);
     const start = range ? range.start : 0;
     const end = range && typeof range.end === 'number' ? range.end : (meta.fileSize ? meta.fileSize - 1 : undefined);
@@ -136,7 +152,7 @@ function buildApp(opts = {}) {
     if (length) reply.raw.setHeader('X-File-Size', String(meta.fileSize));
 
     inflight++;
-    const src = stream.streamFile(megaLink, start, end);
+    const src = stream.streamFile(megaLink, start, end, childId);
     src.on('data', (chunk) => {
       totalBytesPiped += chunk.length;
       bytesSinceReport += chunk.length;

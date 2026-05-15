@@ -55,21 +55,65 @@ function guessMime(name) {
   return map[ext] || 'application/octet-stream';
 }
 
-async function getMeta(megaLink) {
+async function getMeta(megaLink, childId) {
   const file = fromUrl(megaLink);
   await loadAttributes(file);
-  return { filename: file.name, fileSize: file.size, mimeType: guessMime(file.name) };
+  if (file.directory) {
+    if (!childId) {
+      return {
+        type: 'folder',
+        filename: file.name,
+        fileSize: (file.children || []).reduce((s, c) => s + (c.directory ? 0 : (c.size || 0)), 0),
+        children: flattenChildren(file),
+      };
+    }
+    const child = findChild(file, childId);
+    if (!child) throw new Error('child not found');
+    if (child.directory) throw new Error('child is folder');
+    return { type: 'file', filename: child.name, fileSize: child.size, mimeType: guessMime(child.name), childId };
+  }
+  return { type: 'file', filename: file.name, fileSize: file.size, mimeType: guessMime(file.name) };
 }
 
-function streamFile(megaLink, rangeStart, rangeEnd) {
-  const file = fromUrl(megaLink);
+function findChild(folder, childId) {
+  const stack = [...(folder.children || [])];
+  while (stack.length) {
+    const n = stack.shift();
+    if (n.nodeId === childId) return n;
+    if (n.children) stack.push(...n.children);
+  }
+  return null;
+}
+
+function flattenChildren(folder, prefix = '') {
+  const out = [];
+  for (const c of (folder.children || [])) {
+    const path = prefix ? `${prefix}/${c.name}` : c.name;
+    if (c.directory) {
+      out.push(...flattenChildren(c, path));
+    } else {
+      out.push({ id: c.nodeId, name: c.name, path, size: c.size || 0 });
+    }
+  }
+  return out;
+}
+
+function streamFile(megaLink, rangeStart, rangeEnd, childId) {
+  const root = fromUrl(megaLink);
   const opts = {};
   if (typeof rangeStart === 'number' && rangeStart >= 0) opts.start = rangeStart;
   if (typeof rangeEnd === 'number' && rangeEnd > 0) opts.end = rangeEnd;
   const passthrough = new PassThrough();
   Promise.resolve()
-    .then(() => loadAttributes(file))
+    .then(() => loadAttributes(root))
     .then(() => {
+      let file = root;
+      if (root.directory) {
+        if (!childId) throw new Error('folder link requires child id');
+        file = findChild(root, childId);
+        if (!file) throw new Error('child not found');
+        if (file.directory) throw new Error('child is folder');
+      }
       const size = file.size || 0;
       const start = opts.start || 0;
       const end = typeof opts.end === 'number' ? opts.end : Math.max(0, size - 1);
