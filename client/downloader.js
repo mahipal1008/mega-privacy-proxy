@@ -7,12 +7,16 @@
 //
 // Folders are enumerated and queued as individual files.
 // Files >3.5 GB auto-segment across fresh workers seamlessly.
+// Parallel downloads (up to N concurrent), multi-link paste,
+// retry-failed, rolling speed average.
 // ─────────────────────────────────────────────────────────────
 
 const ORCHESTRATOR_URL = 'https://mega-orchestrator.onrender.com';
 const SEGMENT_BYTES   = 3_500_000_000;
 const BLOB_FALLBACK_MAX = 1_900_000_000; // ~1.9 GB Blob safety ceiling
 const FILE_LINK_RE    = /^https?:\/\/mega\.nz\/(file|folder)\/[A-Za-z0-9_-]+(#|%23)[A-Za-z0-9_-]+/i;
+const MEGA_LINK_GLOBAL_RE = /https?:\/\/mega\.nz\/(file|folder)\/[A-Za-z0-9_-]+(#|%23)[A-Za-z0-9_-]+/gi;
+const SPEED_WINDOW_SEC = 5;
 
 const supportsFSA = typeof window !== 'undefined' && typeof window.showSaveFilePicker === 'function';
 
@@ -104,6 +108,7 @@ async function workerMeta(assignment, megaLink, childId) {
 }
 
 // Retry workerMeta with fresh assignment on network/worker failure
+// Suppresses intermediate CORS/network errors; only surfaces final failure.
 async function workerMetaWithRetry(megaLink, childId, maxRetries = 2) {
   let lastErr;
   for (let i = 0; i <= maxRetries; i++) {
@@ -114,9 +119,11 @@ async function workerMetaWithRetry(megaLink, childId, maxRetries = 2) {
     } catch (e) {
       lastErr = e;
       if (e && e.message && (e.message.includes('Bad access token') || e.message.includes('Rate limited'))) throw e;
+      // Silently retry — don't log intermediate failures
       if (i < maxRetries) await new Promise(r => setTimeout(r, 1000 * (i + 1)));
     }
   }
+  // Only surface error after all retries exhausted
   throw lastErr;
 }
 
@@ -172,12 +179,15 @@ function blobSink(filename, mimeType) {
 const queue = [];
 let queueIdCounter = 0;
 let running = false;
+let activeCount = 0;
 
 function makeItem(megaLink, childId, name, size) {
   return {
     id: ++queueIdCounter, megaLink, childId, name, size,
     status: 'queued', received: 0, speed: 0, startedAt: 0,
-    lastTick: { time: 0, bytes: 0 }, abort: null, error: null,
+    lastTick: { time: 0, bytes: 0 },
+    speedSamples: [], // [{time, bytes}] rolling window for smooth speed
+    abort: null, error: null,
   };
 }
 
@@ -185,7 +195,13 @@ function renderQueue() {
   const sec = $('queue-section'); const list = $('queue-list');
   if (queue.length === 0) { sec.classList.add('hidden'); return; }
   sec.classList.remove('hidden');
+  const activeItems = queue.filter(i => i.status === 'active').length;
   $('queue-count').textContent = `· ${queue.length} item${queue.length === 1 ? '' : 's'}`;
+  const activeBadge = $('active-count');
+  if (activeBadge) {
+    activeBadge.textContent = activeItems > 0 ? `${activeItems} active` : '';
+    activeBadge.style.display = activeItems > 0 ? '' : 'none';
+  }
   list.innerHTML = '';
   for (const it of queue) {
     const li = document.createElement('li');
@@ -202,6 +218,7 @@ function renderQueue() {
         <div class="q-actions">
           ${it.status === 'queued' ? `<button class="q-btn" data-act="start" data-id="${it.id}">Start</button>` : ''}
           ${it.status === 'active' ? `<button class="q-btn danger" data-act="cancel" data-id="${it.id}">Stop</button>` : ''}
+          ${it.status === 'error' ? `<button class="q-btn retry-btn" data-act="retry" data-id="${it.id}">⟳ Retry</button>` : ''}
           ${(it.status === 'queued' || it.status === 'error' || it.status === 'done') ? `<button class="q-btn danger" data-act="remove" data-id="${it.id}">×</button>` : ''}
         </div>
       </div>
@@ -230,12 +247,61 @@ function renderTotals() {
   $('total-eta').textContent = (speed > 0 && total > recvd) ? fmtSecs((total - recvd) / speed) : '–';
 }
 
-// ── Add link → resolve file or folder ─────────────────────────────────
-async function addLink(link) {
+// ── Add link → resolve file or folder (supports multi-link paste) ─────
+async function addLink(raw) {
+  raw = (raw || '').trim();
+  if (!raw) return;
+
+  // Extract all mega links from the pasted text
+  const links = raw.match(MEGA_LINK_GLOBAL_RE);
+  if (!links || links.length === 0) {
+    // Fallback: try the whole input as a single link
+    if (!FILE_LINK_RE.test(raw)) { toast('No valid MEGA links found', 'err'); return; }
+    return addSingleLink(raw);
+  }
+
+  // Deduplicate
+  const unique = [...new Set(links)];
+  if (unique.length === 1) return addSingleLink(unique[0]);
+
+  // Multi-link resolve
+  toast(`Resolving ${unique.length} links…`);
+  $('add-btn').disabled = true;
+  if ($('paste-btn')) $('paste-btn').disabled = true;
+  let resolved = 0, failed = 0;
+  for (const link of unique) {
+    try {
+      const { assignment, meta } = await workerMetaWithRetry(link);
+      if (meta.type === 'folder') {
+        if (meta.children && meta.children.length > 0) {
+          for (const c of meta.children) queue.push(makeItem(link, c.id, c.path || c.name, c.size));
+          resolved += meta.children.length;
+        }
+      } else {
+        queue.push(makeItem(link, undefined, meta.filename, meta.fileSize));
+        resolved++;
+      }
+    } catch (e) {
+      failed++;
+      toast(`Failed: ${link.slice(0, 50)}…`, 'err');
+    }
+  }
+  toast(`Added ${resolved} file${resolved !== 1 ? 's' : ''}${failed > 0 ? ` (${failed} failed)` : ''}`, resolved > 0 ? 'ok' : 'err');
+  renderQueue();
+  $('mega-link').value = '';
+  $('add-btn').disabled = false;
+  if ($('paste-btn')) $('paste-btn').disabled = false;
+
+  // Auto-start if not already running
+  if (resolved > 0 && !running) startAll();
+}
+
+async function addSingleLink(link) {
   link = (link || '').trim();
   if (!FILE_LINK_RE.test(link)) { toast('Not a valid MEGA link', 'err'); return; }
   toast('Resolving link…');
   $('add-btn').disabled = true;
+  if ($('paste-btn')) $('paste-btn').disabled = true;
   try {
     const { assignment, meta } = await workerMetaWithRetry(link);
     if (meta.type === 'folder') {
@@ -248,10 +314,13 @@ async function addLink(link) {
     }
     renderQueue();
     $('mega-link').value = '';
+    // Auto-start if not already running
+    if (!running) startAll();
   } catch (e) {
     toast(e.message || 'Failed to add link', 'err');
   } finally {
     $('add-btn').disabled = false;
+    if ($('paste-btn')) $('paste-btn').disabled = false;
   }
 }
 
@@ -260,6 +329,7 @@ async function runItem(item) {
   if (item.status !== 'queued') return;
   item.status = 'active'; item.received = 0; item.error = null;
   item.startedAt = Date.now(); item.lastTick = { time: Date.now(), bytes: 0 };
+  item.speedSamples = [{ time: Date.now(), bytes: 0 }];
   const aborter = new AbortController(); item.abort = aborter;
   renderQueue();
 
@@ -326,7 +396,15 @@ async function runItem(item) {
               const now = Date.now();
               const dt = (now - item.lastTick.time) / 1000;
               if (dt >= 0.6) {
-                item.speed = (item.received - item.lastTick.bytes) / dt;
+                // Rolling speed: keep samples from last SPEED_WINDOW_SEC seconds
+                item.speedSamples.push({ time: now, bytes: item.received });
+                const cutoff = now - SPEED_WINDOW_SEC * 1000;
+                while (item.speedSamples.length > 2 && item.speedSamples[0].time < cutoff) {
+                  item.speedSamples.shift();
+                }
+                const oldest = item.speedSamples[0];
+                const elapsed = (now - oldest.time) / 1000;
+                item.speed = elapsed > 0 ? (item.received - oldest.bytes) / elapsed : 0;
                 item.lastTick = { time: now, bytes: item.received };
                 renderQueue();
               }
@@ -358,12 +436,30 @@ async function runItem(item) {
 }
 
 async function startAll() {
-  if (running) return; running = true;
+  if (running) return;
+  running = true;
   $('start-all-btn').disabled = true;
-  try {
-    for (const it of queue) {
-      if (it.status === 'queued') await runItem(it);
+
+  const pending = () => queue.find(i => i.status === 'queued');
+
+  async function runNext() {
+    while (true) {
+      const next = pending();
+      if (!next) break;
+      activeCount++;
+      renderQueue();
+      try {
+        await runItem(next);
+      } finally {
+        activeCount--;
+      }
     }
+  }
+
+  try {
+    const maxC = parseInt(($('max-concurrent') && $('max-concurrent').value) || '3', 10);
+    const workers = Array.from({ length: maxC }, () => runNext());
+    await Promise.all(workers);
   } finally {
     running = false;
     $('start-all-btn').disabled = false;
@@ -404,12 +500,76 @@ window.addEventListener('DOMContentLoaded', () => {
     for (let i = queue.length - 1; i >= 0; i--) if (queue[i].status === 'done') queue.splice(i, 1);
     renderQueue();
   });
+
+  // Paste button: read clipboard
+  const pasteBtn = $('paste-btn');
+  if (pasteBtn) {
+    pasteBtn.addEventListener('click', async () => {
+      try {
+        const text = await navigator.clipboard.readText();
+        if (text && text.trim()) {
+          $('mega-link').value = text.trim();
+          addLink(text.trim());
+        } else {
+          toast('Clipboard is empty', 'err');
+        }
+      } catch (e) {
+        toast('Clipboard access denied. Paste manually.', 'err');
+      }
+    });
+  }
+
+  // Retry all failed button
+  const retryAllBtn = $('retry-all-btn');
+  if (retryAllBtn) {
+    retryAllBtn.addEventListener('click', () => {
+      let count = 0;
+      for (const it of queue) {
+        if (it.status === 'error') {
+          it.status = 'queued'; it.received = 0; it.error = null; it.speed = 0;
+          it.speedSamples = [];
+          count++;
+        }
+      }
+      if (count > 0) {
+        renderQueue();
+        toast(`${count} item${count !== 1 ? 's' : ''} re-queued`, 'ok');
+        if (!running) startAll();
+      } else {
+        toast('No failed items', 'err');
+      }
+    });
+  }
+
+  // Drag-and-drop on input area
+  const inputCard = document.querySelector('.input-card');
+  if (inputCard) {
+    inputCard.addEventListener('dragover', (e) => { e.preventDefault(); inputCard.classList.add('drag-over'); });
+    inputCard.addEventListener('dragleave', () => { inputCard.classList.remove('drag-over'); });
+    inputCard.addEventListener('drop', (e) => {
+      e.preventDefault();
+      inputCard.classList.remove('drag-over');
+      const text = e.dataTransfer.getData('text/plain') || e.dataTransfer.getData('text/uri-list') || '';
+      if (text.trim()) {
+        $('mega-link').value = text.trim();
+        addLink(text.trim());
+      }
+    });
+  }
+
+  // Queue action delegation (start, cancel, remove, retry)
   $('queue-list').addEventListener('click', (e) => {
     const btn = e.target.closest('button[data-act]'); if (!btn) return;
     const id = +btn.dataset.id;
     const it = queue.find(q => q.id === id); if (!it) return;
     if (btn.dataset.act === 'start') runItem(it);
     else if (btn.dataset.act === 'cancel') { try { it.abort && it.abort.abort(); } catch {} }
+    else if (btn.dataset.act === 'retry') {
+      it.status = 'queued'; it.received = 0; it.error = null; it.speed = 0;
+      it.speedSamples = [];
+      renderQueue();
+      if (!running) startAll();
+    }
     else if (btn.dataset.act === 'remove') {
       const idx = queue.indexOf(it); if (idx >= 0) queue.splice(idx, 1);
       renderQueue();

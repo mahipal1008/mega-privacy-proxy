@@ -28,20 +28,33 @@
 
     <section class="card input-card">
       <div class="input-row">
-        <input id="mega-link" type="url" placeholder="Paste any mega.nz/file/… or mega.nz/folder/… link"
+        <input id="mega-link" type="text" placeholder="Paste mega.nz links — one or multiple (separated by newlines or spaces)"
                autocomplete="off" spellcheck="false" />
         <button id="add-btn" type="button" class="btn-primary">
           <span class="btn-text">Add</span>
         </button>
+        <button id="paste-btn" type="button" class="btn-secondary" title="Paste links from clipboard">
+          📋 Paste
+        </button>
       </div>
-      <div class="input-hint" id="input-hint">Press Enter or click Add. Folder links list all files.</div>
+      <div class="input-hint" id="input-hint">Paste one or many mega.nz links. Drag &amp; drop text with links also works.</div>
+      <div class="settings-row">
+        <label for="max-concurrent">Concurrent downloads:</label>
+        <select id="max-concurrent">
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3" selected>3</option>
+          <option value="5">5</option>
+        </select>
+      </div>
     </section>
 
     <section id="queue-section" class="card queue-card hidden">
       <div class="queue-header">
-        <h2>Downloads <span id="queue-count" class="muted"></span></h2>
+        <h2>Downloads <span id="queue-count" class="muted"></span> <span id="active-count" class="badge active-badge" style="display:none"></span></h2>
         <div class="queue-actions">
           <button id="start-all-btn" type="button" class="btn-secondary">Start all</button>
+          <button id="retry-all-btn" type="button" class="btn-secondary">⟳ Retry failed</button>
           <button id="clear-done-btn" type="button" class="btn-ghost">Clear finished</button>
         </div>
       </div>
