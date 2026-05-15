@@ -73,16 +73,21 @@ function toast(msg, type = '') {
 async function apiDownload(megaLink) {
   const token = getToken();
   if (!token) throw new Error('No access token. Append #yourtoken to the URL and reload.');
-  const r = await fetch(ORCHESTRATOR_URL + '/api/download', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
-    body: JSON.stringify({ megaLink }),
-  });
+  let r;
+  try {
+    r = await fetch(ORCHESTRATOR_URL + '/api/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+      body: JSON.stringify({ megaLink }),
+    });
+  } catch (netErr) {
+    throw new Error('Cannot reach server. Check your connection or try again in a moment.');
+  }
   if (r.status === 403) throw new Error('Bad access token.');
   if (r.status === 429) throw new Error('Rate limited. Wait a minute.');
   if (!r.ok) {
     const b = await r.json().catch(() => ({}));
-    throw new Error(`Orchestrator ${r.status}: ${b.error || 'unknown'}`);
+    throw new Error(`Server error ${r.status}: ${b.error || 'unknown'}`);
   }
   return r.json();
 }
@@ -95,11 +100,26 @@ async function apiStatus() {
   } catch { return null; }
 }
 
+// Pre-warm the orchestrator on page load to eliminate cold-start latency.
+let _prewarmed = false;
+function prewarmOrchestrator() {
+  if (_prewarmed) return;
+  _prewarmed = true;
+  fetch(ORCHESTRATOR_URL + '/health', { method: 'GET', cache: 'no-store', keepalive: true })
+    .then(() => console.log('[MegaTunnel] Server ready'))
+    .catch(() => { _prewarmed = false; });
+}
+
 // ── Worker API ────────────────────────────────────────────────────────
 async function workerMeta(assignment, megaLink, childId) {
   const u = assignment.workerUrl.replace(/\/$/, '') + '/meta?link=' + encodeURIComponent(megaLink) +
     (childId ? '&child=' + encodeURIComponent(childId) : '');
-  const r = await fetch(u, { headers: { Authorization: 'Bearer ' + assignment.sessionToken } });
+  let r;
+  try {
+    r = await fetch(u, { headers: { Authorization: 'Bearer ' + assignment.sessionToken } });
+  } catch (netErr) {
+    throw new Error('Worker unreachable — retrying with a different server…');
+  }
   if (!r.ok) {
     const b = await r.json().catch(() => ({}));
     throw new Error(`meta ${r.status}${b.detail ? ': ' + b.detail : ''}`);
@@ -109,7 +129,7 @@ async function workerMeta(assignment, megaLink, childId) {
 
 // Retry workerMeta with fresh assignment on network/worker failure
 // Suppresses intermediate CORS/network errors; only surfaces final failure.
-async function workerMetaWithRetry(megaLink, childId, maxRetries = 2) {
+async function workerMetaWithRetry(megaLink, childId, maxRetries = 3) {
   let lastErr;
   for (let i = 0; i <= maxRetries; i++) {
     try {
@@ -119,11 +139,9 @@ async function workerMetaWithRetry(megaLink, childId, maxRetries = 2) {
     } catch (e) {
       lastErr = e;
       if (e && e.message && (e.message.includes('Bad access token') || e.message.includes('Rate limited'))) throw e;
-      // Silently retry — don't log intermediate failures
-      if (i < maxRetries) await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+      if (i < maxRetries) await new Promise(r => setTimeout(r, 2000 * (i + 1)));
     }
   }
-  // Only surface error after all retries exhausted
   throw lastErr;
 }
 
@@ -136,7 +154,12 @@ async function streamSegment({ assignment, megaLink, childId, rangeStart, rangeE
   if (rangeStart > 0 || rangeEnd !== undefined) {
     headers['Range'] = `bytes=${rangeStart}-${rangeEnd !== undefined ? rangeEnd : ''}`;
   }
-  const r = await fetch(u, { headers, signal: abortSignal });
+  let r;
+  try {
+    r = await fetch(u, { headers, signal: abortSignal });
+  } catch (netErr) {
+    throw new Error('Worker connection lost — will retry with fresh server');
+  }
   if (!r.ok && r.status !== 206) throw new Error('stream ' + r.status);
   const reader = r.body.getReader();
   while (true) {
@@ -579,6 +602,7 @@ window.addEventListener('DOMContentLoaded', () => {
     if (hint) hint.innerHTML += '<br><span style="color:#ffb13d">⚠ Browser doesn\'t support File System Access. Files >1.9 GB unsupported. Use Chrome/Edge.</span>';
   }
 
+  prewarmOrchestrator();
   refreshPoolBadge();
   setInterval(refreshPoolBadge, 15000);
 
