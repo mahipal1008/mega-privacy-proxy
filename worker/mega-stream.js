@@ -160,52 +160,15 @@ function flattenChildren(folder, prefix = '') {
   return out;
 }
 
-// Parallel chunk download: splits the byte range into PARALLEL_CONNS equal chunks,
-// fetches them concurrently via separate megajs download() calls, then streams them
-// to the PassThrough in order. MEGA uses AES-128-CTR which supports random access,
-// so each range is independently decryptable.
-const PARALLEL_CONNS = 8;
-const CHUNK_MIN_BYTES = 512 * 1024; // don't parallelize if range < 512KB
+// Stream a MEGA file (or child of folder) with native megajs parallel connections.
+// megajs download() supports maxConnections internally — true parallel streaming
+// with no RAM buffering. Each connection handles its own chunk and decrypts independently.
+// Default is 4; we use 8 for higher throughput against MEGA's CDN.
+const MEGA_MAX_CONNECTIONS = 8;
+const MEGA_INITIAL_CHUNK = 256 * 1024;   // 256 KB first chunk
+const MEGA_CHUNK_INCREMENT = 256 * 1024; // grow by 256 KB each step
+const MEGA_MAX_CHUNK = 4 * 1024 * 1024;  // cap at 4 MB
 
-async function parallelStream(file, start, end, passthrough) {
-  const totalBytes = end - start + 1;
-
-  // For small ranges or single-connection fallback
-  if (totalBytes < CHUNK_MIN_BYTES * 2 || PARALLEL_CONNS <= 1) {
-    return new Promise((resolve, reject) => {
-      const up = file.download({ start, end });
-      up.on('error', reject);
-      up.on('end', resolve);
-      up.pipe(passthrough, { end: false });
-    });
-  }
-
-  // Split into PARALLEL_CONNS equal chunks
-  const chunkSize = Math.ceil(totalBytes / PARALLEL_CONNS);
-  const chunks = [];
-  for (let i = 0; i < PARALLEL_CONNS; i++) {
-    const cs = start + i * chunkSize;
-    const ce = Math.min(cs + chunkSize - 1, end);
-    if (cs > end) break;
-    chunks.push({ start: cs, end: ce });
-  }
-
-  // Download all chunks in parallel into memory buffers
-  const buffers = await Promise.all(chunks.map(({ start: cs, end: ce }) => new Promise((resolve, reject) => {
-    const bufs = [];
-    const up = file.download({ start: cs, end: ce });
-    up.on('error', reject);
-    up.on('data', (b) => bufs.push(b));
-    up.on('end', () => resolve(Buffer.concat(bufs)));
-  })));
-
-  // Write all chunks in order to the passthrough
-  for (const buf of buffers) {
-    passthrough.write(buf);
-  }
-}
-
-// Stream a MEGA file (or child of folder) with parallel chunk downloading.
 function streamFile(megaLink, rangeStart, rangeEnd, childId) {
   const { subType, subId } = parseMegaLink(megaLink);
   const root = fromUrl(megaLink);
@@ -213,9 +176,11 @@ function streamFile(megaLink, rangeStart, rangeEnd, childId) {
   if (typeof rangeStart === 'number' && rangeStart >= 0) opts.start = rangeStart;
   if (typeof rangeEnd === 'number' && rangeEnd >= 0) opts.end = rangeEnd;
   const passthrough = new PassThrough({ highWaterMark: 8 * 1024 * 1024 });
+  let upstream = null;
+  passthrough.on('close', () => { try { upstream && upstream.destroy(); } catch (_) {} });
   Promise.resolve()
     .then(() => loadAttributes(root))
-    .then(async () => {
+    .then(() => {
       let file = root;
       if (root.directory) {
         if (subType === 'file' && subId && !childId) {
@@ -241,8 +206,16 @@ function streamFile(megaLink, rangeStart, rangeEnd, childId) {
         : Math.max(0, size - 1);
       if (size === 0) { passthrough.end(); return; }
       if (start > end) { passthrough.destroy(new Error('range_not_satisfiable')); return; }
-      await parallelStream(file, start, end, passthrough);
-      passthrough.end();
+      upstream = file.download({
+        start,
+        end,
+        maxConnections: MEGA_MAX_CONNECTIONS,
+        initialChunkSize: MEGA_INITIAL_CHUNK,
+        chunkSizeIncrement: MEGA_CHUNK_INCREMENT,
+        maxChunkSize: MEGA_MAX_CHUNK,
+      });
+      upstream.on('error', (e) => passthrough.destroy(e));
+      upstream.pipe(passthrough);
     })
     .catch((err) => passthrough.destroy(err));
   return passthrough;
