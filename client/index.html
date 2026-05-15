@@ -30,6 +30,7 @@
       <div class="input-row">
         <input id="mega-link" type="text" placeholder="Paste mega.nz links — one or multiple (separated by newlines or spaces)"
                autocomplete="off" spellcheck="false" />
+        <button id="clear-btn" type="button" class="btn-clear" title="Clear input" style="display:none">×</button>
         <button id="add-btn" type="button" class="btn-primary">
           <span class="btn-text">Add</span>
         </button>
@@ -45,6 +46,11 @@
           <option value="2">2</option>
           <option value="3" selected>3</option>
           <option value="5">5</option>
+        </select>
+        <label for="folder-mode">Folders:</label>
+        <select id="folder-mode">
+          <option value="individual" selected>Individual files</option>
+          <option value="zip">Download as ZIP</option>
         </select>
       </div>
     </section>
@@ -84,6 +90,7 @@
     <small>Personal use only. Bypassing MEGA's bandwidth caps may violate MEGA's Terms of Service.</small>
   </footer>
 
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
   <script src="crypto.js"></script>
   <script src="downloader.js"></script>
 </body>

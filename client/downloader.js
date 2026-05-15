@@ -186,8 +186,18 @@ function makeItem(megaLink, childId, name, size) {
     id: ++queueIdCounter, megaLink, childId, name, size,
     status: 'queued', received: 0, speed: 0, startedAt: 0,
     lastTick: { time: 0, bytes: 0 },
-    speedSamples: [], // [{time, bytes}] rolling window for smooth speed
+    speedSamples: [],
     abort: null, error: null,
+  };
+}
+function makeZipItem(megaLink, folderName, children, totalSize) {
+  return {
+    id: ++queueIdCounter, megaLink, name: (folderName || 'folder') + '.zip',
+    size: totalSize || 0, received: 0, speed: 0, startedAt: 0,
+    lastTick: { time: 0, bytes: 0 }, speedSamples: [],
+    abort: null, error: null,
+    status: 'queued', isZip: true, zipChildren: children,
+    zipDone: 0, zipTotal: children.length,
   };
 }
 
@@ -205,21 +215,22 @@ function renderQueue() {
   list.innerHTML = '';
   for (const it of queue) {
     const li = document.createElement('li');
-    li.className = 'q-item' + (it.status === 'active' ? ' active' : it.status === 'done' ? ' done' : it.status === 'error' ? ' error' : '');
+    li.className = 'q-item' + (it.status === 'active' ? ' active' : it.status === 'done' ? ' done' : it.status === 'error' ? ' error' : '') + (it.isZip ? ' zip-item' : '');
     const pct = it.size > 0 ? (it.received / it.size) * 100 : 0;
+    const zipLabel = it.isZip ? ` <span class="zip-badge">ZIP · ${it.zipDone || 0}/${it.zipTotal || 0} files</span>` : '';
     li.innerHTML = `
       <div class="q-row">
-        <span class="q-icon">${fileIcon(it.name)}</span>
+        <span class="q-icon">${it.isZip ? '🗜️' : fileIcon(it.name)}</span>
         <div class="q-info">
-          <div class="q-name" title="${escapeHtml(it.name)}">${escapeHtml(it.name)}</div>
+          <div class="q-name" title="${escapeHtml(it.name)}">${escapeHtml(it.name)}${zipLabel}</div>
           <div class="q-meta">${fmtBytes(it.received)} / ${fmtBytes(it.size)}${it.speed > 0 ? ' · ' + fmtBytes(it.speed) + '/s' : ''}</div>
         </div>
         <span class="q-status ${it.status === 'done' ? 's-done' : it.status === 'error' ? 's-err' : ''}">${statusLabel(it)}</span>
         <div class="q-actions">
-          ${it.status === 'queued' ? `<button class="q-btn" data-act="start" data-id="${it.id}">Start</button>` : ''}
-          ${it.status === 'active' ? `<button class="q-btn danger" data-act="cancel" data-id="${it.id}">Stop</button>` : ''}
+          ${it.status === 'queued' ? `<button class="q-btn" data-act="start" data-id="${it.id}">▶ Start</button>` : ''}
+          ${it.status === 'active' ? `<button class="q-btn danger" data-act="cancel" data-id="${it.id}">⏹ Stop</button>` : ''}
           ${it.status === 'error' ? `<button class="q-btn retry-btn" data-act="retry" data-id="${it.id}">⟳ Retry</button>` : ''}
-          ${(it.status === 'queued' || it.status === 'error' || it.status === 'done') ? `<button class="q-btn danger" data-act="remove" data-id="${it.id}">×</button>` : ''}
+          <button class="q-btn danger" data-act="remove" data-id="${it.id}" title="Remove">×</button>
         </div>
       </div>
       <div class="q-bar"><div class="q-bar-fill" style="width:${pct.toFixed(2)}%"></div></div>
@@ -289,11 +300,9 @@ async function addLink(raw) {
   toast(`Added ${resolved} file${resolved !== 1 ? 's' : ''}${failed > 0 ? ` (${failed} failed)` : ''}`, resolved > 0 ? 'ok' : 'err');
   renderQueue();
   $('mega-link').value = '';
+  if ($('clear-btn')) $('clear-btn').style.display = 'none';
   $('add-btn').disabled = false;
   if ($('paste-btn')) $('paste-btn').disabled = false;
-
-  // Auto-start if not already running
-  if (resolved > 0 && !running) startAll();
 }
 
 async function addSingleLink(link) {
@@ -304,18 +313,31 @@ async function addSingleLink(link) {
   if ($('paste-btn')) $('paste-btn').disabled = true;
   try {
     const { assignment, meta } = await workerMetaWithRetry(link);
+    const folderMode = ($('folder-mode') && $('folder-mode').value) || 'individual';
     if (meta.type === 'folder') {
       if (!meta.children || meta.children.length === 0) { toast('Folder is empty.', 'err'); return; }
-      for (const c of meta.children) queue.push(makeItem(link, c.id, c.path || c.name, c.size));
-      toast(`Folder added: ${meta.children.length} file${meta.children.length === 1 ? '' : 's'} (${fmtBytes(meta.fileSize)})`, 'ok');
+      if (folderMode === 'zip') {
+        const totalSize = meta.children.reduce((s, c) => s + (c.size || 0), 0);
+        if (totalSize > 2 * 1024 * 1024 * 1024) {
+          toast(`⚠ ZIP mode not recommended for folders >2 GB (${fmtBytes(totalSize)}). Using individual files instead.`, 'warn');
+          for (const c of meta.children) queue.push(makeItem(link, c.id, c.path || c.name, c.size));
+          toast(`Folder added: ${meta.children.length} files (${fmtBytes(meta.fileSize)})`, 'ok');
+        } else {
+          const folderName = meta.filename || 'folder';
+          queue.push(makeZipItem(link, folderName, meta.children, totalSize));
+          toast(`Folder queued as ZIP: ${folderName}.zip (${fmtBytes(totalSize)}, ${meta.children.length} files)`, 'ok');
+        }
+      } else {
+        for (const c of meta.children) queue.push(makeItem(link, c.id, c.path || c.name, c.size));
+        toast(`Folder added: ${meta.children.length} file${meta.children.length === 1 ? '' : 's'} (${fmtBytes(meta.fileSize)})`, 'ok');
+      }
     } else {
       queue.push(makeItem(link, undefined, meta.filename, meta.fileSize));
       toast(`Added: ${meta.filename} (${fmtBytes(meta.fileSize)})`, 'ok');
     }
     renderQueue();
     $('mega-link').value = '';
-    // Auto-start if not already running
-    if (!running) startAll();
+    if ($('clear-btn')) $('clear-btn').style.display = 'none';
   } catch (e) {
     toast(e.message || 'Failed to add link', 'err');
   } finally {
@@ -351,7 +373,11 @@ async function runItem(item) {
         });
       } catch (e) {
         if (e && e.name === 'AbortError') { item.status = 'queued'; renderQueue(); return; }
-        throw e;
+        // SecurityError or gesture error — fall back to Blob sink silently
+        if (item.size > BLOB_FALLBACK_MAX) {
+          throw new Error('File too large for browser save fallback (>1.9 GB). Use Chrome/Edge and click Start directly.');
+        }
+        sink = blobSink(filename, null);
       }
       const writable = await handle.createWritable();
       sink = fsaSink(writable);
@@ -435,6 +461,66 @@ async function runItem(item) {
   }
 }
 
+// ── Run a folder-as-ZIP item ──────────────────────────────────────────
+async function runZipItem(item) {
+  if (item.status !== 'queued') return;
+  if (!window.JSZip) { item.status = 'error'; item.error = 'JSZip not loaded'; renderQueue(); return; }
+  item.status = 'active'; item.received = 0; item.error = null;
+  item.startedAt = Date.now(); item.lastTick = { time: Date.now(), bytes: 0 };
+  item.speedSamples = [{ time: Date.now(), bytes: 0 }];
+  const aborter = new AbortController(); item.abort = aborter;
+  renderQueue();
+  try {
+    const zip = new window.JSZip();
+    for (let i = 0; i < item.zipChildren.length; i++) {
+      if (aborter.signal.aborted) throw new Error('cancelled');
+      const c = item.zipChildren[i];
+      item.zipDone = i; renderQueue();
+      const { assignment } = await workerMetaWithRetry(item.megaLink, c.id);
+      const chunks = [];
+      await streamSegment({
+        assignment, megaLink: item.megaLink, childId: c.id,
+        rangeStart: 0, rangeEnd: undefined,
+        sink: { write: async (chunk) => chunks.push(chunk), finalize: async () => {}, abort: async () => {} },
+        abortSignal: aborter.signal,
+        onBytes: (b) => {
+          item.received += b;
+          const now = Date.now();
+          const dt = (now - item.lastTick.time) / 1000;
+          if (dt >= 0.6) {
+            item.speedSamples.push({ time: now, bytes: item.received });
+            const cutoff = now - SPEED_WINDOW_SEC * 1000;
+            while (item.speedSamples.length > 2 && item.speedSamples[0].time < cutoff) item.speedSamples.shift();
+            const oldest = item.speedSamples[0];
+            const elapsed = (now - oldest.time) / 1000;
+            item.speed = elapsed > 0 ? (item.received - oldest.bytes) / elapsed : 0;
+            item.lastTick = { time: now, bytes: item.received };
+            renderQueue();
+          }
+        },
+      });
+      zip.file(c.path || c.name, new Blob(chunks));
+    }
+    item.zipDone = item.zipTotal; renderQueue();
+    toast('Building ZIP…');
+    const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 1 } });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = item.name || 'folder.zip'; document.body.appendChild(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 5000);
+    item.status = 'done'; item.speed = 0; item.size = blob.size; item.received = blob.size;
+    renderQueue();
+    toast('ZIP saved: ' + item.name, 'ok');
+  } catch (e) {
+    if (e && e.message === 'cancelled') { item.status = 'queued'; }
+    else { item.status = 'error'; item.error = (e && e.message ? e.message : 'error').slice(0, 60); toast(item.name + ': ' + item.error, 'err'); }
+    item.speed = 0;
+    renderQueue();
+  } finally {
+    item.abort = null;
+  }
+}
+
 async function startAll() {
   if (running) return;
   running = true;
@@ -449,7 +535,8 @@ async function startAll() {
       activeCount++;
       renderQueue();
       try {
-        await runItem(next);
+        if (next.isZip) await runZipItem(next);
+        else await runItem(next);
       } finally {
         activeCount--;
       }
@@ -495,6 +582,18 @@ window.addEventListener('DOMContentLoaded', () => {
 
   $('add-btn').addEventListener('click', () => addLink($('mega-link').value));
   $('mega-link').addEventListener('keydown', (e) => { if (e.key === 'Enter') addLink($('mega-link').value); });
+  $('mega-link').addEventListener('input', () => {
+    const cb = $('clear-btn');
+    if (cb) cb.style.display = $('mega-link').value ? '' : 'none';
+  });
+  const clearBtn = $('clear-btn');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      $('mega-link').value = '';
+      clearBtn.style.display = 'none';
+      $('mega-link').focus();
+    });
+  }
   $('start-all-btn').addEventListener('click', startAll);
   $('clear-done-btn').addEventListener('click', () => {
     for (let i = queue.length - 1; i >= 0; i--) if (queue[i].status === 'done') queue.splice(i, 1);
@@ -509,6 +608,7 @@ window.addEventListener('DOMContentLoaded', () => {
         const text = await navigator.clipboard.readText();
         if (text && text.trim()) {
           $('mega-link').value = text.trim();
+          if ($('clear-btn')) $('clear-btn').style.display = '';
           addLink(text.trim());
         } else {
           toast('Clipboard is empty', 'err');
@@ -533,8 +633,7 @@ window.addEventListener('DOMContentLoaded', () => {
       }
       if (count > 0) {
         renderQueue();
-        toast(`${count} item${count !== 1 ? 's' : ''} re-queued`, 'ok');
-        if (!running) startAll();
+        toast(`${count} item${count !== 1 ? 's' : ''} re-queued — click ▶ Start all to download`, 'ok');
       } else {
         toast('No failed items', 'err');
       }
@@ -552,6 +651,7 @@ window.addEventListener('DOMContentLoaded', () => {
       const text = e.dataTransfer.getData('text/plain') || e.dataTransfer.getData('text/uri-list') || '';
       if (text.trim()) {
         $('mega-link').value = text.trim();
+        if ($('clear-btn')) $('clear-btn').style.display = '';
         addLink(text.trim());
       }
     });
@@ -562,13 +662,13 @@ window.addEventListener('DOMContentLoaded', () => {
     const btn = e.target.closest('button[data-act]'); if (!btn) return;
     const id = +btn.dataset.id;
     const it = queue.find(q => q.id === id); if (!it) return;
-    if (btn.dataset.act === 'start') runItem(it);
+    if (btn.dataset.act === 'start') { if (it.isZip) runZipItem(it); else runItem(it); }
     else if (btn.dataset.act === 'cancel') { try { it.abort && it.abort.abort(); } catch {} }
     else if (btn.dataset.act === 'retry') {
       it.status = 'queued'; it.received = 0; it.error = null; it.speed = 0;
       it.speedSamples = [];
       renderQueue();
-      if (!running) startAll();
+      if (it.isZip) runZipItem(it); else runItem(it);
     }
     else if (btn.dataset.act === 'remove') {
       const idx = queue.indexOf(it); if (idx >= 0) queue.splice(idx, 1);

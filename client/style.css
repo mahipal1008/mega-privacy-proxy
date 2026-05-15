@@ -156,6 +156,23 @@ button { font-family: inherit; }
 .q-btn.retry-btn { color: var(--amber); border-color: rgba(255, 177, 61, .4); }
 .q-btn.retry-btn:hover { color: #fff; border-color: var(--amber); background: rgba(255, 177, 61, .12); }
 
+.btn-clear {
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; border: none; color: var(--text-dim);
+  font-size: 20px; line-height: 1; padding: 0 8px; cursor: pointer;
+  border-radius: 6px; transition: color .15s, background .15s;
+  flex-shrink: 0;
+}
+.btn-clear:hover { color: var(--text); background: var(--card-hi); }
+
+.zip-badge {
+  display: inline-block; font-size: 10px; font-weight: 600; letter-spacing: .04em;
+  background: rgba(99, 102, 241, .2); color: #a5b4fc;
+  border-radius: 4px; padding: 1px 6px; margin-left: 6px; vertical-align: middle;
+}
+
+.q-item.zip-item .q-bar-fill { background: linear-gradient(90deg, #6366f1, #8b5cf6); }
+
 /* Active downloads badge */
 .active-badge {
   font-size: 11px; padding: 2px 8px; border-radius: 999px; margin-left: 6px; vertical-align: middle;
