@@ -64,7 +64,6 @@ function parseRange(header, totalSize) {
     end = totalSize - 1;
   }
   if (totalSize && typeof end === 'number') end = Math.min(end, totalSize - 1);
-  if (totalSize && start >= totalSize) return null; // 416 trigger
   return { start, end };
 }
 

@@ -38,6 +38,25 @@
           📋 Paste
         </button>
       </div>
+      <div class="oneclick-row">
+        <button id="zip-download-btn" type="button" class="btn-zip" title="Resolve folder + download everything as a single ZIP file">
+          🗜️ Download as ZIP
+        </button>
+        <span class="oneclick-hint">One click — downloads entire folder as a single .zip file</span>
+      </div>
+      <div id="zip-progress-section" class="zip-progress hidden">
+        <div class="zip-header">
+          <span id="zip-status-icon" class="zip-spin">⏳</span>
+          <span id="zip-status-text">Resolving folder…</span>
+          <button id="zip-cancel-btn" type="button" class="q-btn danger">✕ Cancel</button>
+        </div>
+        <div class="zip-stats">
+          <span id="zip-file-progress">0 / 0 files</span>
+          <span id="zip-bytes-progress">0 B</span>
+          <span id="zip-speed">– /s</span>
+        </div>
+        <div class="q-bar"><div id="zip-bar-fill" class="q-bar-fill zip-bar-fill" style="width:0%"></div></div>
+      </div>
       <div class="input-hint" id="input-hint">Paste one or many mega.nz links. Drag &amp; drop text with links also works.</div>
       <div class="settings-row">
         <label for="max-concurrent">Concurrent downloads:</label>
@@ -64,6 +83,36 @@
           <button id="clear-done-btn" type="button" class="btn-ghost">Clear finished</button>
         </div>
       </div>
+      <!-- Search & Filter toolbar -->
+      <div class="queue-toolbar">
+        <div class="search-row">
+          <span class="search-icon">🔍</span>
+          <input id="queue-search" type="text" placeholder="Search files by name or folder…" autocomplete="off" />
+          <button id="search-clear" type="button" class="btn-clear search-clear" style="display:none" title="Clear search">×</button>
+        </div>
+        <div class="filter-sort-row">
+          <div class="filter-tabs" id="filter-tabs">
+            <button class="ftab active" data-filter="all">All</button>
+            <button class="ftab" data-filter="image">🖼 Images</button>
+            <button class="ftab" data-filter="video">🎬 Videos</button>
+            <button class="ftab" data-filter="audio">🎵 Audio</button>
+            <button class="ftab" data-filter="doc">📄 Docs</button>
+            <button class="ftab" data-filter="archive">📦 Archives</button>
+          </div>
+          <div class="sort-controls">
+            <label class="sort-label">Sort:</label>
+            <select id="sort-select">
+              <option value="name-asc">Name A→Z</option>
+              <option value="name-desc">Name Z→A</option>
+              <option value="size-asc">Size ↑</option>
+              <option value="size-desc">Size ↓</option>
+              <option value="type">Type</option>
+              <option value="folder">Folder</option>
+            </select>
+          </div>
+        </div>
+        <div id="filter-summary" class="filter-summary" style="display:none"></div>
+      </div>
       <div class="totals">
         <div class="stat"><span class="stat-num" id="total-progress">0%</span><span class="stat-lbl">Total</span></div>
         <div class="stat"><span class="stat-num" id="total-speed">– /s</span><span class="stat-lbl">Speed</span></div>
@@ -85,6 +134,29 @@
   </main>
 
   <div id="toast-host" class="toast-host" aria-live="polite"></div>
+
+  <!-- Preview modal (image / video / audio / pdf) -->
+  <div id="preview-modal" class="preview-modal hidden" role="dialog" aria-modal="true" aria-label="Preview">
+    <div class="preview-backdrop" data-close="1"></div>
+    <div class="preview-shell" id="preview-shell">
+      <header class="preview-header">
+        <span class="preview-title" id="preview-title">Preview</span>
+        <div class="preview-meta" id="preview-meta"></div>
+        <div class="preview-actions">
+          <button id="preview-fullscreen-btn" type="button" class="btn-ghost preview-fs-btn" title="Toggle fullscreen">⛶</button>
+          <button id="preview-download-btn" type="button" class="btn-secondary">⬇ Save</button>
+          <button id="preview-close-btn" type="button" class="btn-ghost" data-close="1" aria-label="Close">✕</button>
+        </div>
+      </header>
+      <div class="preview-body" id="preview-body">
+        <div class="preview-loader" id="preview-loader">
+          <div class="preview-spin">⏳</div>
+          <div id="preview-status">Preparing preview…</div>
+          <div class="q-bar"><div id="preview-bar" class="q-bar-fill" style="width:0%"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <footer class="footer">
     <small>Personal use only. Bypassing MEGA's bandwidth caps may violate MEGA's Terms of Service.</small>
