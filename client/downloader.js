@@ -103,6 +103,23 @@ async function workerMeta(assignment, megaLink, childId) {
   return r.json();
 }
 
+// Retry workerMeta with fresh assignment on network/worker failure
+async function workerMetaWithRetry(megaLink, childId, maxRetries = 2) {
+  let lastErr;
+  for (let i = 0; i <= maxRetries; i++) {
+    try {
+      const assignment = await apiDownload(megaLink);
+      const meta = await workerMeta(assignment, megaLink, childId);
+      return { assignment, meta };
+    } catch (e) {
+      lastErr = e;
+      if (e && e.message && (e.message.includes('Bad access token') || e.message.includes('Rate limited'))) throw e;
+      if (i < maxRetries) await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+    }
+  }
+  throw lastErr;
+}
+
 // Stream one byte range and write directly to writable (FSA) or push into chunks (fallback).
 // onBytes(bytesRead) called for progress, returns when range fully consumed.
 async function streamSegment({ assignment, megaLink, childId, rangeStart, rangeEnd, sink, onBytes, abortSignal }) {
@@ -220,8 +237,7 @@ async function addLink(link) {
   toast('Resolving link…');
   $('add-btn').disabled = true;
   try {
-    const assignment = await apiDownload(link);
-    const meta = await workerMeta(assignment, link);
+    const { assignment, meta } = await workerMetaWithRetry(link);
     if (meta.type === 'folder') {
       if (!meta.children || meta.children.length === 0) { toast('Folder is empty.', 'err'); return; }
       for (const c of meta.children) queue.push(makeItem(link, c.id, c.path || c.name, c.size));
@@ -249,9 +265,8 @@ async function runItem(item) {
 
   let sink = null;
   try {
-    // Refresh meta + first assignment together
-    const firstAssignment = await apiDownload(item.megaLink);
-    const meta = await workerMeta(firstAssignment, item.megaLink, item.childId);
+    // Refresh meta + first assignment together (with retry on dead workers)
+    const { assignment: firstAssignment, meta } = await workerMetaWithRetry(item.megaLink, item.childId);
     if (meta.type === 'folder') throw new Error('folder slot got folder meta');
     item.size = meta.fileSize; item.name = meta.filename || item.name;
 

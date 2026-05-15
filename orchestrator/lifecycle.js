@@ -134,16 +134,30 @@ function createLifecycle({ pool, renderApi, config, logger }) {
     }
   }
 
+  // Probe ACTIVE workers' /health endpoint; replace dead ones.
+  async function healthCheckWorkers() {
+    for (const w of pool.getAllWorkers()) {
+      if (w.status !== STATUS.ACTIVE || !w.url) continue;
+      const alive = await renderApi.probeHealth(w.url).catch(() => false);
+      if (!alive) {
+        log('[lifecycle] worker dead', w.id);
+        pool.removeWorker(w.id);
+        if (w.serviceId) { try { await renderApi.killWorker(w.serviceId); } catch (_) {} }
+      }
+    }
+  }
+
   function startPeriodicMaintenance(intervalMs = 60000) {
     const h1 = setInterval(() => { ensureMinWorkers().catch(() => {}); }, intervalMs);
     const h2 = setInterval(() => { reapStuckWarming().catch(() => {}); }, intervalMs);
-    h1.unref && h1.unref(); h2.unref && h2.unref();
-    return () => { clearInterval(h1); clearInterval(h2); };
+    const h3 = setInterval(() => { healthCheckWorkers().then(() => ensureMinWorkers()).catch(() => {}); }, intervalMs * 2);
+    h1.unref && h1.unref(); h2.unref && h2.unref(); h3.unref && h3.unref();
+    return () => { clearInterval(h1); clearInterval(h2); clearInterval(h3); };
   }
 
   return {
     spawnOne, spawnOneWithRetry, onStartup, onBandwidthReport,
-    ensureMinWorkers, reapStuckWarming, startPeriodicMaintenance,
+    ensureMinWorkers, reapStuckWarming, healthCheckWorkers, startPeriodicMaintenance,
     // Wait for all background promotions to settle (used by tests).
     waitForPromotions: async () => { while (promoters.size) await Promise.allSettled([...promoters]); },
     _inFlight: inFlight,
